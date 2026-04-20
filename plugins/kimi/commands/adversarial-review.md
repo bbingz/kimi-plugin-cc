@@ -37,7 +37,7 @@ This command is review-only: do NOT apply patches or suggest you are about to ma
 4. For each finding, show: severity badge, title, `file:line_start` (or range), body verbatim, recommendation.
 5. List `next_steps`.
 6. **If `retry_notice` is non-null, render it VERBATIM at the very END after `next_steps`.** Do NOT paraphrase. (Phase-3-review G-H3.)
-7. If `/kimi:review` already ran earlier in this conversation, compare findings: both-found (high agreement = real), only-adversarial (potential over-skepticism — still show), only-/kimi:review (potential under-skepticism — also show).
+7. If `/kimi:review` already ran earlier in this conversation, do a best-effort comparison: treat two findings as the same when they share `file` AND their `[line_start..line_end]` ranges overlap. Bucket into both-found (high agreement — surface as "confirmed"), only-adversarial (surface as "red-team caught extra"), only-/kimi:review (surface as "balanced caught extra"). Exact matching is not required — Claude judges overlap, and low-confidence matches go in the only-X buckets.
 
 **Execution mode:**
 - If `$ARGUMENTS` contains `--wait`, foreground.

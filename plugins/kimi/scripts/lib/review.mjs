@@ -160,8 +160,7 @@ export function reviewError({
 //   buildPrompt({ context, focus, schemaPath, retryHint }) → string
 //   callLLM({ prompt, model, cwd, timeout, resumeSessionId })
 //     → { ok, response, sessionId?, status?, partialResponse?, error? }
-// This is exactly the signature of kimi.mjs buildReviewPrompt + callKimi;
-// sibling plugins provide their own pair. The pipeline never imports a
+// Sibling plugins provide their own pair. The pipeline never imports a
 // provider module — all binding happens at the call site.
 //
 // Returns success-shape: { ok:true, ...parsedReview, truncated, truncation_notice,
