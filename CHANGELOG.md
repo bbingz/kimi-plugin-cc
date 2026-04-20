@@ -2,6 +2,23 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-20 [Claude Opus 4.7 — Phase 3 /kimi:review + 1-shot retry]
+
+- **status**: done
+- **scope**: plugins/kimi/scripts/lib/kimi.mjs, plugins/kimi/scripts/kimi-companion.mjs, plugins/kimi/scripts/lib/render.mjs, plugins/kimi/commands/review.md (new), plugins/kimi/schemas/review-output.schema.json (new), plugins/kimi/skills/kimi-result-handling/{SKILL.md, references/ask-render.md (new), references/review-render.md (new)}
+- **summary**: /kimi:review end-to-end with JSON parse/validate + 1-shot retry. Executed Phase 3 v2 plan via subagent-driven-development (8 tasks + 1 inline bugfix).
+  - **Task 3.1 (housekeeping)**: `!assistantText.trim()` whitespace guard in callKimi + callKimiStreaming (codex Phase-2-review M3); sessionId-null stderr warning extended to JSON + stream runAsk paths (codex M2); `renderGeminiResult` → `renderKimiResult` rename.
+  - **Task 3.2 (SKILL split)**: `kimi-result-handling/SKILL.md` slimmed to cross-command rules; created `references/ask-render.md` with /kimi:ask rendering rationale. `references/review-render.md` deliberately deferred to Task 3.6 (v2 plan: avoid scaffold-then-overwrite). Also removed a duplicated "## Think blocks" section and a stale "Split this skill" TODO.
+  - **Task 3.3 (schema)**: `plugins/kimi/schemas/review-output.schema.json` byte-aligned from gemini-plugin-cc, verdict enum extended with `"no_changes"` for the companion-side fast path (gemini v1-review G-H2).
+  - **Task 3.4 (review lib)**: `MAX_REVIEW_DIFF_BYTES=150_000`; `buildReviewPrompt` (strong kimi constraints: no markdown fence, no prose preamble, no Chinese severity, all-or-none findings); `extractReviewJson` (3 dirty modes + reject multi-top-level per codex v1-review C-M1); `validateReviewOutput` (per-finding required keys + enums + bounds; rejects `no_changes` from kimi output, codex C-H1); `callKimiReview` with `reviewError` unified failure shape + try/catch around schema load (codex C-H2) + stderr retry breadcrumb (gemini G-L3) + `resumeSessionId` on retry.
+  - **Task 3.5 (companion)**: `runReview` subcommand with `aliasMap: {m: "model"}`; outer try/catch wrapping `callKimiReview`; dispatcher wire-up; `UNPACK_SAFE_SUBCOMMANDS` extended with `review` + `REVIEW_KNOWN_FLAG` regex + all-positionals fallback branch.
+  - **Task 3.6 (command + reference)**: `commands/review.md` with truncation warning at step 1 of presentation (gemini v1-review G-M3); `references/review-render.md` holds ONLY background rationale (retry reasoning, severity-english policy, partial-findings rejection, truncation prominence, non-findings shapes, /review comparison).
+  - **Task 3.7 inline fix**: `collectReviewContext` always emits a `(none)` skeleton even for zero-diff repos, making the naive `!content.trim()` check unreachable and the `no_changes` fast path dead. Fixed by stripping `(none)` sections before the check — gemini-plugin-cc has the same filter.
+- **Exit criteria met**: T5 PASS (off-by-one flagged as high/critical severity with correct line numbers), empty-diff PASS (no_changes fast path), invalid-model PASS (pre-flight routing), extractor-modes 6/6 PASS (all 3 dirty modes + edge cases), truncation PASS (337KB diff handled).
+- **Deferred further**: codex Phase-2-review M1 (cwd realpath), codex L1 (cosmetic shape unification), gemini G-C2 (E2BIG >1MB), gemini G-M1 (thinkBlocks UX phrasing), gemini G-M2 (sibling-plugin template extraction — Phase 5 scope).
+- **Cumulative**: 44/85 tasks (52%). Git tag `phase-3-review` applied.
+- **next**: author docs/superpowers/plans/YYYY-MM-DD-phase-4-background-agent.md. Phase 4 adds `/kimi:rescue` + job-control.mjs + kimi-agent subagent + SessionEnd/Stop hooks.
+
 ## 2026-04-20 [Claude Opus 4.7 — Phase 2 post-review polish]
 
 - **status**: done
