@@ -23,6 +23,19 @@ function formatSection(title, body) {
   return `## ${title}\n\n${content}\n`;
 }
 
+// Check whether a collectReviewContext result represents an empty diff.
+// Owns the coupling to formatSection's output shape (gemini Phase-3-review
+// G-H1): callers must NOT grep the content string themselves — if formatSection
+// changes, only this helper needs to follow.
+export function isEmptyContext(context) {
+  if (!context || typeof context.content !== "string") return true;
+  // Each section from formatSection looks like `## Title\n\n<body>\n`.
+  // A section is "empty" when body is the sentinel "(none)". Strip those
+  // sections, then check if anything substantive remains.
+  const meaningful = context.content.replace(/## [^\n]+\n\n\(none\)\n*/g, "").trim();
+  return meaningful.length === 0;
+}
+
 // ── Repository basics ───────────────────────────────────
 
 /**

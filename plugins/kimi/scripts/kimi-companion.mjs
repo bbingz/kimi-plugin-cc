@@ -15,7 +15,7 @@ import {
   MAX_REVIEW_DIFF_BYTES,
 } from "./lib/kimi.mjs";
 import { binaryAvailable } from "./lib/process.mjs";
-import { ensureGitRepository, collectReviewContext } from "./lib/git.mjs";
+import { ensureGitRepository, collectReviewContext, isEmptyContext } from "./lib/git.mjs";
 
 // Plugin root is two levels above this file (scripts/kimi-companion.mjs →
 // plugins/kimi). Used for loading packaged schemas.
@@ -244,17 +244,12 @@ async function runReview(rawArgs) {
   const base = options.base || null;
   const context = collectReviewContext(cwd, { base, scope });
 
-  // collectReviewContext ALWAYS returns non-empty content — even with zero
-  // changes it emits a section skeleton ("## Git Status\n\n(none)\n##
-  // Staged Diff\n\n(none)\n..."). A naive `!content.trim()` check misses
-  // the empty-diff case and we waste a kimi call returning `verdict:
-  // "approve"` instead of the no_changes fast path. Strip the `(none)`
-  // sections before checking — Task 3.7 Step 3 caught this; gemini-plugin-cc
-  // has the same filter for the same reason.
-  const meaningfulContent = (context.content || "")
-    .replace(/## [^\n]+\n\n\(none\)\n*/g, "")
-    .trim();
-  if (!meaningfulContent) {
+  // collectReviewContext ALWAYS returns a non-empty content string (section
+  // skeleton with `(none)` bodies even on a clean tree). Ask the git module
+  // whether the context is semantically empty rather than regex-scanning
+  // the skeleton here — that keeps the coupling to formatSection's shape
+  // local to git.mjs (gemini Phase-3-review G-H1).
+  if (isEmptyContext(context)) {
     process.stdout.write(JSON.stringify({
       ok: true,
       verdict: "no_changes",
@@ -305,8 +300,16 @@ async function runReview(rawArgs) {
     );
   }
 
-  // Non-OK reviews exit 1 so callers (hooks, scripts) can branch on status.
-  process.exit(result.ok ? KIMI_EXIT.OK : 1);
+  // Propagate kimi's exit status when the failure happened at the transport
+  // layer (codex Phase-3-review C-H1). Without this, SIGINT/SIGTERM-killed
+  // reviews would exit 1 instead of 130/143, losing Phase 2's signal
+  // semantics. reviewError packs transport status in `transportError.status`;
+  // non-transport failures (parse/validate) fall back to exit 1.
+  process.exit(
+    result.ok
+      ? KIMI_EXIT.OK
+      : (result.transportError?.status ?? 1)
+  );
 }
 
 // ── Dispatcher ─────────────────────────────────────────────

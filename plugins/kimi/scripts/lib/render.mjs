@@ -60,22 +60,6 @@ export function renderKimiResult(result) {
 }
 
 /**
- * Render review result with diff context.
- */
-export function renderReviewResult(result, { truncated = false } = {}) {
-  const lines = [];
-
-  if (truncated) {
-    lines.push(
-      "> **Note:** The diff was truncated because it exceeded the size limit. Some changes may not be covered in this review.\n"
-    );
-  }
-
-  lines.push(renderKimiResult(result));
-  return lines.join("\n");
-}
-
-/**
  * Render a background job submission confirmation.
  */
 export function renderJobSubmitted(job) {
