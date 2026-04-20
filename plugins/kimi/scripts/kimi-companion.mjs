@@ -171,6 +171,17 @@ async function runAsk(rawArgs) {
       );
     }
   }
+  // Resume-mismatch warning (gemini Phase-2-review G-H1): kimi 1.36 silently
+  // ignores a bogus or expired -r <sid> and mints a fresh session (Task 2.7
+  // Step 6 "reverse WARN" documented this). When the user explicitly asked to
+  // resume a specific sid but got a different one back, flag it — otherwise
+  // they'd see a valid-looking footer and assume their context carried over.
+  if (callArgs.resumeSessionId && result.ok && result.sessionId &&
+      result.sessionId !== callArgs.resumeSessionId) {
+    process.stderr.write(
+      `Warning: requested --resume ${callArgs.resumeSessionId} did not match returned session ${result.sessionId}; kimi likely started a fresh session and prior context was not carried over.\n`
+    );
+  }
   // Propagate kimi's original exit status (codex C4) so callers can distinguish
   // config vs usage vs signal causes. result.status is null on success paths.
   process.exit(result.ok ? KIMI_EXIT.OK : (result.status ?? 1));

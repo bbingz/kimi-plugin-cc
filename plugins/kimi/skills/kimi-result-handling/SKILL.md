@@ -34,43 +34,23 @@ v0.1 cannot obtain token counts (kimi drops `StatusUpdate` in JsonPrinter). Do N
 
 If the companion returns an error status (non-zero exit), show it directly with context. Do NOT try to re-run. Use the exit-code map in `kimi-cli-runtime` to interpret the cause and choose the right user-facing message.
 
-## Concrete rendering patterns
+## Command-specific rendering
 
-### `/kimi:ask` response
+**Command files (`plugins/kimi/commands/<name>.md`) are authoritative for their own rendering contract.** They supersede this skill's examples when they disagree. The shape of the companion's stdout also varies per command:
 
-If the companion returned `{ok: true, response: "...", sessionId: "<uuid>"}`:
+- `/kimi:ask` runs in **text mode** by default. The companion's stdout is `response + "\n" + footer` — Claude presents it **verbatim**, no prefix (no "Kimi says:"), no trailing commentary, no unsolicited follow-up questions. See `ask.md` for the full contract including the declarative error-suggestion templates.
+- `/kimi:review` (Phase 3+) runs in JSON mode. Structured findings are the primary payload; prose is commentary. See `review.md` when it lands.
+- Other `/kimi:*` commands specify their own rendering in their command files.
 
-```
-Kimi says:
+This skill holds the **cross-command** rules. If a command file is silent on a situation, fall back to the Presentation rules above.
 
-<response verbatim>
+## Chinese/mixed-language output
 
----
-(session: <sessionId>)
+Kimi often replies in the same language as the prompt. If the user asked in Chinese, do NOT translate the response to English unless they explicitly asked. Quote verbatim. **Do NOT offer translation as an unprompted follow-up** — `/kimi:ask` specifically forbids appending any commentary. If the user later asks "翻译一下" or similar, translate then.
 
-Note: <any disagreement with Claude's view, or "Claude agrees.">
-```
+## Think blocks (future `--show-thinking` flag, not v0.1)
 
-### `/kimi:ask` with partialResponse
-
-If the companion returned `{ok: false, error: "...", partialResponse: "..."}`:
-
-```
-Kimi errored: <error>
-
-Partial response before the error:
-<partialResponse>
-
-Retry with a different model or smaller prompt.
-```
-
-### Chinese/mixed-language output
-
-Kimi will often reply in the same language as the prompt. If the user asked in Chinese, do NOT translate the response to English unless they explicitly asked. Quote verbatim and offer: "Translate to English?" as a follow-up.
-
-### Think blocks (future `--show-thinking` flag, not v0.1)
-
-If surfaced, render in a collapsed markdown details block:
+If a future version surfaces `type: "think"` blocks, render them in a collapsed markdown details block — never inline with the main answer:
 
 ```
 <details>
@@ -83,7 +63,10 @@ If surfaced, render in a collapsed markdown details block:
 <visible text response>
 ```
 
+The footer's `thinkBlocks: N` count (emitted by the companion for /kimi:ask) is a quality signal only — do not fabricate the contents or promise a way to see them while the surface remains v0.1.
+
 ## What still needs Phase 5 work
 
 - Review-findings rendering (severity-sorted, deep-linked file references) — waits for `/kimi:review` (Phase 3).
 - Disagreement-phrasing library across review vs ask contexts.
+- Split this skill into `references/<command>-render.md` modules (gemini G6) when Phase 3 adds `/kimi:review`.
