@@ -250,11 +250,17 @@ async function runReview(rawArgs) {
   // the skeleton here — that keeps the coupling to formatSection's shape
   // local to git.mjs (gemini Phase-3-review G-H1).
   if (isEmptyContext(context)) {
+    // no_changes is companion-emitted only — kimi itself never produces this
+    // verdict (review.md + review-render.md document the divergence). Field
+    // shape matches the callKimiReview success contract for consistency.
     process.stdout.write(JSON.stringify({
       ok: true,
       verdict: "no_changes",
       response: "No changes to review.",
       truncated: false,
+      truncation_notice: null,
+      retry_used: false,
+      retry_notice: null,
     }, null, 2) + "\n");
     process.exit(0);
   }

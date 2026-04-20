@@ -15,19 +15,21 @@ The companion always emits JSON to stdout matching `plugins/kimi/schemas/review-
 
 **Top-level fields:**
 - `ok`: true / false
-- `verdict`: `"approve"` | `"needs-attention"` | `"no_changes"`
+- `verdict`: `"approve"` | `"needs-attention"` | `"no_changes"` — note: `"no_changes"` is emitted ONLY by the companion when the diff is empty; kimi itself returns only `approve` or `needs-attention`.
 - `summary`: one-paragraph overview
 - `findings`: array of finding objects (severity, title, body, file, line_start, line_end, confidence, recommendation)
 - `next_steps`: array of recommended actions
 - `truncated`: whether the diff was cut off
+- `truncation_notice`: prefilled warning string when `truncated: true`, otherwise `null` — render VERBATIM at the very top of the output
 - `retry_used`: whether the first response required a retry
+- `retry_notice`: prefilled discreet footnote when `retry_used: true`, otherwise `null` — render VERBATIM at the very END of the output
 
 **If `verdict === "no_changes"`**: tell the user "No changes to review." and stop.
 
 **If `ok === false`**: show `error`, `rawText` (if present, clipped to 500 chars), and note whether a retry was used. Do NOT auto-retry — the companion already tried once. Suggest running `/kimi:review --scope staged` or reducing diff size.
 
 **If `ok === true` and `findings` is non-empty:**
-1. **If `truncated === true`, warn PROMINENTLY at the top BEFORE verdict/findings**: "⚠️ Diff exceeded the review budget; only the first 150 KB was reviewed. Findings below are INCOMPLETE. Consider narrowing scope (`--scope staged`) or running per-path." (gemini v1-review G-M3: users miss the warning when it's buried below findings.)
+1. **If `truncation_notice` is non-null, render it VERBATIM at the very TOP before any verdict, summary, or findings.** Do NOT rewrite or summarize the notice string — the companion prefilled it and relies on Claude rendering it unchanged. (Gemini Phase-3-review G-H2: long findings lists cause this warning to get buried when expressed as a rule instead of a data field.)
 2. Present the `verdict` and `summary` prominently.
 3. Sort findings by severity (`critical > high > medium > low`), then by `file` (alphabetical), then by `line_start` (ascending).
 4. For each finding, show:
@@ -37,7 +39,7 @@ The companion always emits JSON to stdout matching `plugins/kimi/schemas/review-
    - Body verbatim.
    - Recommendation.
 5. List `next_steps`.
-6. If `retry_used === true`: append one discreet line at the END: "(Kimi's first response was malformed; the retry succeeded.)"
+6. **If `retry_notice` is non-null, render it VERBATIM at the very END after `next_steps`.** Do NOT paraphrase. (Gemini Phase-3-review G-H3: long outputs cause the model to drop the footnote when expressed as a rule.)
 7. If Claude's own `/review` already ran earlier this conversation, compare findings: both-found, only-kimi, only-claude buckets.
 
 **Do NOT auto-fix any issues.** Ask the user which items to address. One question at a time if multiple clusters.

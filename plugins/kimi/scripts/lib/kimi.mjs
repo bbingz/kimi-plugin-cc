@@ -21,6 +21,18 @@ const LARGE_PROMPT_THRESHOLD_BYTES = 100_000;
 // Reviews above this get truncated with a visible warning.
 export const MAX_REVIEW_DIFF_BYTES = 150_000;
 
+// Render-layer notices (gemini Phase-3-review G-H2, G-H3). Signals the
+// companion wants surfaced consistently go into JSON fields here rather
+// than relying on Claude's rendering discipline on long outputs — long
+// findings lists empirically cause warnings/footnotes at step 1 or step 6
+// of review.md to get buried or dropped. Keeping the strings in code also
+// means the command file can say "render <field> verbatim" rather than
+// re-templating the same text.
+export const TRUNCATION_NOTICE =
+  "⚠️ Diff exceeded the review budget; only the first 150 KB was reviewed. Findings below are INCOMPLETE. Consider narrowing scope (--scope staged) or running per-path.";
+export const RETRY_NOTICE =
+  "(Kimi's first response was malformed; the retry succeeded.)";
+
 // ── Runtime sentinels (kimi-cli source-derived markers) ────
 // Per codex source-read. If kimi-cli updates, only this block changes.
 
@@ -793,7 +805,9 @@ function reviewError({ error, rawText = null, parseError = null, firstRawText = 
     firstRawText,
     transportError,
     truncated,
+    truncation_notice: truncated ? TRUNCATION_NOTICE : null,
     retry_used,
+    retry_notice: retry_used ? RETRY_NOTICE : null,
     sessionId,
   };
 }
@@ -843,7 +857,9 @@ export function callKimiReview({ context, focus, schemaPath, model, cwd, timeout
         ok: true,
         ...firstExtracted.data,
         truncated,
+        truncation_notice: truncated ? TRUNCATION_NOTICE : null,
         retry_used: false,
+        retry_notice: null,
         sessionId: firstResult.sessionId,
       };
     }
@@ -918,10 +934,21 @@ export function callKimiReview({ context, focus, schemaPath, model, cwd, timeout
     ok: true,
     ...retryExtracted.data,
     truncated,
+    truncation_notice: truncated ? TRUNCATION_NOTICE : null,
     retry_used: true,
+    retry_notice: RETRY_NOTICE,
     sessionId: retryResult.sessionId,
   };
 }
+
+// TODO(Phase 5): extract buildReviewPrompt / extractReviewJson /
+// validateReviewOutput / reviewError / callKimiReview into shared
+// `scripts/lib/review.mjs` module with the agent-call function injected
+// (gemini Phase-3-review G-M2). Only kimi-specific pieces are the "好的,
+// 这是 JSON：" prose warning in buildReviewPrompt + the callKimi/
+// callKimiStreaming bindings + the session-reuse hint text. This extraction
+// makes minimax-plugin-cc / qwen-plugin-cc etc. able to reuse the
+// parse+validate+retry machinery without copy-paste.
 
 // ── Exports for Phase 2+ to consume ────────────────────────
 
