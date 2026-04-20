@@ -12,9 +12,20 @@ Claude Code plugin integrating Moonshot Kimi CLI.
 
 ## Install (development)
 
+Claude Code `plugins install` takes a plugin name from a **registered marketplace**, not a filesystem path. Register this repo as a local marketplace first, then install by name:
+
+```bash
+# 1) Register this repo as a marketplace (one-time per machine)
+claude plugins marketplace add /Users/bing/-Code-/kimi-plugin-cc
+
+# 2) Install the kimi plugin from it
+claude plugins install kimi@kimi-plugin
+
+# 3) Verify
+claude plugins list | grep kimi
 ```
-claude plugins add /Users/bing/-Code-/kimi-plugin-cc/plugins/kimi
-```
+
+Restart your Claude Code session after install so slash commands become available.
 
 ## Commands (v0.1 incremental)
 

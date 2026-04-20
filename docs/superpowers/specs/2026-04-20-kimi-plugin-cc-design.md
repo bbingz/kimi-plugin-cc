@@ -560,6 +560,9 @@ T1-T5 是 v0.1 下限；T6-T8 是 v0.1 上限。**T1-T5 不过不 tag v0.1。**
 ## H. API 行为契约陷阱（gemini review 补充：跨 provider 通用 checklist）
 **目的**：这些是"CLI 文档说得像一回事、实际跑出来另一回事"的系统性坑。kimi 踩过，下一个 provider 大概率也会有同构问题。做 minimax/qwen/doubao 时，写 plan 前先跑一遍这张表。
 
+**Claude Code 侧陷阱**（不是 provider CLI 的坑，但同样踩过）：
+- [ ] **`claude plugins install` 不接受路径**，只接受 `<plugin@marketplace>` 名字。本地开发必须先 `claude plugins marketplace add <repo-path-or-marketplace-json>` 注册为 marketplace，然后 `claude plugins install <plugin>@<marketplace-name>`。README 的"install (development)"段要写这个两步流程。`claude plugins validate <path>` 可以直接用路径做 manifest 静态校验，但它不安装。
+
 - [ ] **stream 粒度真相**：官方文档说"streaming JSON"时，实际是 per-token / per-message / per-turn 哪种？用一个长响应 + 中途 SIGTERM 实测，看 stdout 留下了什么
 - [ ] **结构化字段位置**：assistant 文本是 `content` 字符串，还是 `content` 列表（块拆分）？块有哪些 `type`？未知 type 怎么处理？
 - [ ] **session_id 投递通道**：在 stdout 事件里？stderr hint？本地 metadata 文件？多路同时？每条通道在 `--quiet` / CI / 非 TTY 下是否保留？

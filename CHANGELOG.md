@@ -2,6 +2,17 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-20 [Claude Opus 4.7 — Phase 1 live-install verified]
+
+- **status**: done
+- **scope**: README.md, docs/superpowers/specs/2026-04-20-kimi-plugin-cc-design.md (§6.2 lessons §H), install flow
+- **summary**: Resolved Phase 1 T1.16 Steps 2-3 (live-integration) via the correct Claude Code install path.
+  - `claude plugins install ./plugins/kimi` fails with "not found in any configured marketplace" — the subcommand takes a NAME from a registered marketplace, not a filesystem path.
+  - Correct flow: `claude plugins marketplace add <repo-root>` (or `.claude-plugin/marketplace.json` path) → `claude plugins install <plugin>@<marketplace-name>`. For this repo: `kimi@kimi-plugin`.
+  - Verified: `kimi-plugin` marketplace registered (Source: File /Users/bing/-Code-/kimi-plugin-cc/.claude-plugin/marketplace.json), `kimi@kimi-plugin v0.1.0` installed (user scope, enabled). Slash commands require a Claude Code session restart to pick up.
+  - README updated with the correct two-step install. Spec §6.2 lessons.md §H gained a new "Claude Code 侧陷阱" subsection so the next plugin (minimax/qwen) won't hit this.
+- **next**: after restart, run `/kimi:setup` in Claude Code to verify end-to-end.
+
 ## 2026-04-20 [Claude Opus 4.7 — Phase 2 plan v3 after second 3-way review]
 
 - **status**: done
