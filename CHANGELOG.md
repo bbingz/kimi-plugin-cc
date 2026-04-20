@@ -2,6 +2,24 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-20 [Claude Opus 4.7 — Phase 4 background + agent]
+
+- **status**: done
+- **scope**: plugins/kimi/scripts/lib/{job-control.mjs (new), prompts.mjs (new), state.mjs}, plugins/kimi/scripts/{kimi-companion.mjs, session-lifecycle-hook.mjs (new), stop-review-gate-hook.mjs (new)}, plugins/kimi/hooks/hooks.json (new), plugins/kimi/prompts/stop-review-gate.md (new), plugins/kimi/agents/kimi-agent.md (new), plugins/kimi/commands/{rescue,status,result,cancel}.md (new)
+- **summary**: Background-job + agent surface. Executed Phase 4 v2 plan via subagent-driven-development (9 tasks). Plan itself went through 1 round of 3-way review before execution (v1→v2, 9 findings integrated: codex C-M1/M2/M3/M4 + gemini G-C1/C2/H1/H2/H3+M1).
+  - **Task 4.1**: Ported `job-control.mjs` (599 lines) from gemini-plugin-cc via mechanical sed rebind (callGeminiStreaming→callKimiStreaming, geminiSessionId→kimiSessionId, env var rename, import path, "ga"→"ka" prefix). Removed `approvalMode` from streaming config + rewrote onEvent for kimi's role-based event taxonomy (Phase 2 probe: no typed init/message/result envelope). Created `prompts.mjs` (14-line byte-aligned port) + 3 timing-history stubs in state.mjs (v0.1 has no stats surface — no-op stubs acceptable).
+  - **Task 4.2**: `runTask` foreground + background subcommand. Foreground uses empty onEvent (v2 codex C-M1: avoid stderr/stdout double-output); background uses `runStreamingJobInBackground` with detached + tmpfile config. Resume resolution via `resolveResumeCandidate` + `candidate.kimiSessionId`. `DEFAULT_CONTINUE_PROMPT` (bilingual) for `--resume-last` with no prompt.
+  - **Task 4.3**: `runJobStatus` / `runJobResult` / `runJobCancel` / `runTaskResumeCandidate` handlers. `runJobCancel` has `--any-session` flag (v2 G-H3+M1) bypassing per-session safety filter. `UNPACK_SAFE_SUBCOMMANDS` extended with 5 new entries + `TASK_KNOWN_FLAG` regex.
+  - **Task 4.4**: Real `dispatchWorker` + `dispatchStreamWorker` dispatchers. `dispatchStreamWorker` wraps `runStreamingWorker` in try/finally so tmpfile cleanup always runs (v2 codex C-M2).
+  - **Task 4.5**: `session-lifecycle-hook.mjs` (SessionStart sets env / SessionEnd cleans session jobs) + `stop-review-gate-hook.mjs` (relaxed ALLOW/BLOCK scanner per v2 gemini G-C1 — scans all lines, not strict first-line). `hooks.json` with SessionStart timeout 15s (v2 gemini G-C2 — up from 5s for cold starts). Setup extended with `--enable/disable-review-gate` + per-workspace-scope comment + `stopReviewGateWorkspace` status field (v2 codex C-M3).
+  - **Task 4.6**: `prompts/stop-review-gate.md` template. Wording aligned with relaxed parser — "first line preferred but preamble tolerated" rather than strict first-line-only.
+  - **Task 4.7**: `agents/kimi-agent.md` thin-forwarder. Dropped `--write` and `--effort` flags (no kimi equivalent per spec §4.3) with explicit "drop silently" section + plan-vs-write-mode warning (v2 gemini G-H1).
+  - **Task 4.8**: `commands/rescue.md` + `status.md` + `result.md` + `cancel.md`. rescue.md drops `--write/--effort` before forwarding (v2 G-H2). cancel.md documents `--any-session` + explicit "don't auto-retry with --any-session" rule (prevents cancelling unrelated jobs).
+- **Exit criteria met**: T6-foreground PASS (response "TASK_OK", UUID sid); T6-background PASS (completed in 3 polls, kimiSessionId captured); T7-resume PASS with kimi actually remembering "4242" across resume (not just `resumed: true` wiring); cancel PASS (state transitions to cancelled). Manual `/kimi:rescue` interactive check deferred to soak.
+- **Deferred**: gemini G-M2 (stop-gate latency docs) — opt-in toggle, acceptable; `/kimi:adversarial-review` (Phase 5); kimi-prompting skill content (Phase 5); `--write` flag on task (v0.2); timing-history (v0.2 observability polish).
+- **Cumulative**: 53/85 tasks (62%). Git tag `phase-4-background` applied.
+- **next**: author docs/superpowers/plans/YYYY-MM-DD-phase-5-adversarial-polish.md. Phase 5 closes v0.1: `/kimi:adversarial-review` + kimi-prompting references/ + lessons.md final + sibling-plugin template extraction (promote review pipeline to shared `scripts/lib/review.mjs`).
+
 ## 2026-04-20 [Claude Sonnet 4.6 — Phase 4 Task 4.4: _worker + _stream-worker dispatch]
 
 - **status**: done
