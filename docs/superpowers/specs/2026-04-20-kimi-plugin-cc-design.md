@@ -507,6 +507,8 @@ T1-T5 是 v0.1 下限；T6-T8 是 v0.1 上限。**T1-T5 不过不 tag v0.1。**
 
 **两层维度**：CLI 集成层（机械） + LLM 行为层（灵魂）。缺任何一层都会在下一个 plugin 翻车。
 
+**模板沉淀**（gemini plan review G7）：kimi-plugin-cc 完成后，把 Phase 1 plan 的 Task 1.1-1.6（repo 初始化 + 5 个通用 lib 近复刻）抽成 `docs/superpowers/templates/phase-1-template.md`。下一个 plugin（minimax / qwen / doubao）直接基于模板生成它自己的 Phase 1 plan，只替换 kimi 特定的 Task 1.8-1.14（`<llm>.mjs` / `<llm>-companion.mjs` / `/<llm>:setup` / 3 skills）。
+
 ```markdown
 # Lessons: gemini-plugin-cc → kimi-plugin-cc 手工迁移
 

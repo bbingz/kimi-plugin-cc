@@ -2,6 +2,24 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-20 [Claude Opus 4.7 — Phase 1 plan v2 after 3-way review]
+
+- **status**: done
+- **scope**: docs/superpowers/plans/2026-04-20-phase-1-skeleton.md (12 integrated findings), docs/superpowers/specs/2026-04-20-kimi-plugin-cc-design.md (§6.2 template sentence)
+- **summary**: plan-level 3-way review caught 4 Critical/High correctness bugs before execution:
+  - [Critical] Original Task 1.15 called `claude plugins add` — this subcommand does not exist (actual: `install | validate | disable | enable | list | marketplace | uninstall | update`). Plan now uses `claude plugins validate` (Task 1.16 Step 1) and flags the live-session `/kimi:setup` check as MANUAL (can't be automated inside a subagent).
+  - [High] Task 1.8 TOML regex `/^\[models\.([^\]]+)\]\s*$/` did not handle quoted keys with slashes. Host kimi config uses `[models."kimi-code/kimi-for-coding"]` — regex now handles bare / double-quoted / single-quoted forms and strips quotes.
+  - [High] Task 1.9 auth ping ran without verifying default_model is actually in [models.*] — would misreport "LLMNotSet" config errors as auth failures. Added model preflight; returns `{loggedIn: null, modelConfigured: false}` to distinguish.
+  - [High] Task 1.11 install URL was wrong (`kimi.moonshot.cn/cli/install.sh` → 404). Corrected to `https://cdn.kimi.com/binaries/kimi-cli/install.sh | bash`.
+  - [High] Tasks 1.3-1.7 smoke tests now include `Object.keys` parity check against gemini-plugin-cc source — catches silent API drift from hand-rewrites.
+  - [High] Task 1.8 Step 3 includes "constant assertion" — SESSION_ID_STDERR_REGEX / PING_MAX_STEPS / LARGE_PROMPT_THRESHOLD_BYTES / PARENT_SESSION_ENV verified against hardcoded samples.
+  - [High] Task 1.3 header notes Tasks 1.3-1.7 are independent and can be dispatched in parallel.
+  - [Medium] Task 1.10 dispatcher heuristic now gated on `sub === "setup"` + "every token starts with -" so Phase 2 position args (prompts with spaces) won't get split.
+  - [Medium] Header exit-criteria adds user-visible check (`installed: yes` / `default model: <name>` in human-format output).
+  - [Medium] spec §6.2 adds "templatize Phase 1 Tasks 1.1-1.6" sentinel for minimax/qwen follow-ups.
+  - Rejected: gemini G5 (split state.mjs rewrite into 3 steps — only 2 literal constants change, rewrite is already minimal); gemini G8 (merge syntax-check + smoke-test into one step — fine-grained steps aid audit).
+- **next**: execute plan-1-skeleton via subagent-driven-development.
+
 ## 2026-04-20 [Claude Opus 4.7 — Phase 0 remediation after 3-way review]
 
 - **status**: done
