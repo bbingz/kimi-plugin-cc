@@ -12,6 +12,7 @@ import {
   callKimi,
   callKimiStreaming,
   callKimiReview,
+  callKimiAdversarialReview,
   KIMI_EXIT,
   MAX_REVIEW_DIFF_BYTES,
 } from "./lib/kimi.mjs";
@@ -63,6 +64,8 @@ Subcommands:
                                        Send a one-shot prompt. --stream emits JSONL events as they arrive.
   review [--base <ref>] [--scope <auto|staged|unstaged|working-tree|branch>] [-m <model>] [focus...]
                                        Review current diff. Always emits JSON matching review-output schema.
+  adversarial-review [--base <ref>] [--scope <auto|staged|unstaged|working-tree|branch>] [-m <model>] [--background|--wait] [focus...]
+                                       Adversarial (red-team) review on current diff. Same schema; same JSON envelope.
   task [--json] [--background|--wait] [--resume-last|--fresh] [-m <model>] "<prompt>"
                                        Delegate an open-ended task to kimi. Background spawns a detached worker; foreground streams progress.
   status [job-id] [--all] [--wait] [--json]
@@ -398,6 +401,109 @@ async function runReview(rawArgs) {
   );
 }
 
+async function runAdversarialReview(rawArgs) {
+  const { options, positionals } = parseArgs(rawArgs, {
+    booleanOptions: ["json", "background", "wait"],
+    valueOptions: ["base", "scope", "model", "cwd"],
+    aliasMap: { m: "model" },
+  });
+
+  // Adversarial-review ALWAYS emits JSON (same contract as /kimi:review).
+  const emitJson = true;
+
+  const cwd = options.cwd || process.cwd();
+  try {
+    ensureGitRepository(cwd);
+  } catch (e) {
+    process.stdout.write(JSON.stringify({ ok: false, error: e.message }, null, 2) + "\n");
+    process.exit(1);
+  }
+
+  // Background mode: spawn a detached worker that re-enters this subcommand
+  // foreground. Mirror the pattern gemini-companion uses for adversarial-review.
+  if (options.background) {
+    const workspaceRoot = resolveWorkspaceRoot(cwd);
+    const job = createJob({
+      kind: "adversarial-review",
+      command: "adversarial-review",
+      prompt: "adversarial review",
+      workspaceRoot,
+      cwd,
+    });
+    const bgArgs = ["adversarial-review"];
+    if (options.base) bgArgs.push("--base", options.base);
+    if (options.scope) bgArgs.push("--scope", options.scope);
+    if (options.model) bgArgs.push("--model", options.model);
+    positionals.forEach((p) => bgArgs.push(p));
+
+    const submission = runJobInBackground({
+      job, companionScript: SELF, args: bgArgs, workspaceRoot, cwd,
+    });
+    process.stdout.write(JSON.stringify(submission, null, 2) + "\n");
+    process.exit(0);
+  }
+
+  const scope = options.scope || "auto";
+  const base = options.base || null;
+  const context = collectReviewContext(cwd, { base, scope });
+
+  if (isEmptyContext(context)) {
+    process.stdout.write(JSON.stringify({
+      ok: true,
+      verdict: "no_changes",
+      response: "No changes to review.",
+      truncated: false,
+      truncation_notice: null,
+      retry_used: false,
+      retry_notice: null,
+    }, null, 2) + "\n");
+    process.exit(0);
+  }
+
+  let truncated = false;
+  if (context.content.length > MAX_REVIEW_DIFF_BYTES) {
+    context.content = context.content.slice(0, MAX_REVIEW_DIFF_BYTES)
+      + "\n\n... [TRUNCATED — diff exceeded review budget] ...";
+    truncated = true;
+  }
+
+  const focus = positionals.join(" ").trim() || null;
+  const schemaPath = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
+
+  let result;
+  try {
+    result = callKimiAdversarialReview({
+      context,
+      focus,
+      schemaPath,
+      model: options.model || null,
+      cwd,
+      truncated,
+    });
+  } catch (e) {
+    result = {
+      ok: false,
+      error: `Unexpected error during adversarial review: ${e.message}`,
+      truncated,
+      retry_used: false,
+    };
+  }
+
+  process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+
+  if (result.ok && !result.sessionId) {
+    process.stderr.write(
+      "Warning: session_id could not be captured. --resume will not work for this review.\n"
+    );
+  }
+
+  process.exit(
+    result.ok
+      ? KIMI_EXIT.OK
+      : (result.transportError?.status ?? 1)
+  );
+}
+
 const DEFAULT_CONTINUE_PROMPT = "继续上一个任务。Continue the previous task based on our prior exchange.";
 
 async function runTask(rawArgs) {
@@ -619,7 +725,7 @@ function runTaskResumeCandidate(rawArgs) {
 //          mis-split a blob like "-v my prompt" where the leading dash is
 //          part of the prompt). Allowlist known ask flags + their aliases.
 const UNPACK_SAFE_SUBCOMMANDS = new Set([
-  "setup", "ask", "review", "task",
+  "setup", "ask", "review", "adversarial-review", "task",
   "status", "result", "cancel", "task-resume-candidate",
 ]);
 
@@ -628,6 +734,7 @@ const UNPACK_SAFE_SUBCOMMANDS = new Set([
 // other single-dash form is a valid ask flag).
 const ASK_KNOWN_FLAG = /^(?:--(?:json|stream|model|resume)(?:=.*)?|-[mr])$/;
 const REVIEW_KNOWN_FLAG = /^(?:--(?:json|model|base|scope)(?:=.*)?|-m)$/;
+const ADVERSARIAL_REVIEW_KNOWN_FLAG = /^(?:--(?:json|model|base|scope|background|wait)(?:=.*)?|-m)$/;
 const TASK_KNOWN_FLAG = /^(?:--(?:json|background|wait|resume-last|fresh|model|cwd|resume-session-id)(?:=.*)?|-m)$/;
 
 function shouldUnpackBlob(sub, rest) {
@@ -639,6 +746,7 @@ function shouldUnpackBlob(sub, rest) {
   if (sub === "setup") return tokens.every((t) => t.startsWith("-"));
   if (sub === "ask") return ASK_KNOWN_FLAG.test(tokens[0]);
   if (sub === "review") return REVIEW_KNOWN_FLAG.test(tokens[0]) || tokens.every((t) => !t.startsWith("-"));
+  if (sub === "adversarial-review") return ADVERSARIAL_REVIEW_KNOWN_FLAG.test(tokens[0]) || tokens.every((t) => !t.startsWith("-"));
   if (sub === "task") return TASK_KNOWN_FLAG.test(tokens[0]) || tokens.every((t) => !t.startsWith("-"));
   // status/result/cancel/task-resume-candidate: all-flags OR [jobId, ...flags]
   if (sub === "status" || sub === "result" || sub === "cancel" || sub === "task-resume-candidate") {
@@ -701,6 +809,8 @@ async function main() {
       return runAsk(rest);
     case "review":
       return runReview(rest);
+    case "adversarial-review":
+      return runAdversarialReview(rest);
     case "task":
       return runTask(rest);
     case "status":
