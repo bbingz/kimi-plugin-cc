@@ -2,6 +2,7 @@
 import process from "node:process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
 import {
   getKimiAvailability,
@@ -14,12 +15,45 @@ import {
   KIMI_EXIT,
   MAX_REVIEW_DIFF_BYTES,
 } from "./lib/kimi.mjs";
+import {
+  createJob,
+  runStreamingJobInBackground,
+  runStreamingWorker,
+  runWorker,
+  runJobInBackground,
+  buildStatusSnapshot,
+  buildSingleJobSnapshot,
+  resolveResultJob,
+  resolveCancelableJob,
+  waitForJob,
+  cancelJob,
+  resolveResumeCandidate,
+  readStoredJobResult,
+  sortJobsNewestFirst,
+  SESSION_ID_ENV,
+} from "./lib/job-control.mjs";
+import { upsertJob, getConfig, setConfig, listJobs } from "./lib/state.mjs";
 import { binaryAvailable } from "./lib/process.mjs";
 import { ensureGitRepository, collectReviewContext, isEmptyContext } from "./lib/git.mjs";
 
 // Plugin root is two levels above this file (scripts/kimi-companion.mjs →
 // plugins/kimi). Used for loading packaged schemas.
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+// Absolute path to this file — needed for background respawn.
+const SELF = fileURLToPath(import.meta.url);
+
+// Resolve the git workspace root for the given cwd (background job tracking
+// scopes state to the workspace). Falls back to cwd when not in a git repo.
+function resolveWorkspaceRoot(cwd) {
+  try {
+    const r = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd, encoding: "utf8", timeout: 3000, stdio: "pipe",
+    });
+    if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
+  } catch { /* not a git repo */ }
+  return cwd;
+}
 
 const USAGE = `Usage: kimi-companion <subcommand> [options]
 
@@ -316,6 +350,104 @@ async function runReview(rawArgs) {
       ? KIMI_EXIT.OK
       : (result.transportError?.status ?? 1)
   );
+}
+
+const DEFAULT_CONTINUE_PROMPT = "继续上一个任务。Continue the previous task based on our prior exchange.";
+
+async function runTask(rawArgs) {
+  const { options, positionals } = parseArgs(rawArgs, {
+    booleanOptions: ["json", "background", "wait", "resume-last", "fresh"],
+    valueOptions: ["model", "cwd", "resume-session-id"],
+    aliasMap: { m: "model" },
+  });
+
+  // Mutual-exclusion
+  if (options["resume-last"] && options.fresh) {
+    const err = "Choose either --resume-last or --fresh, not both.";
+    if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: err }, null, 2) + "\n");
+    else process.stderr.write("Error: " + err + "\n");
+    process.exit(KIMI_EXIT.USAGE_ERROR);
+  }
+
+  let prompt = positionals.join(" ").trim();
+  if (!prompt && options["resume-last"]) {
+    prompt = DEFAULT_CONTINUE_PROMPT;
+  }
+  if (!prompt) {
+    const err = "Provide a prompt or use --resume-last.";
+    if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: err }, null, 2) + "\n");
+    else process.stderr.write("Error: " + err + "\n");
+    process.exit(KIMI_EXIT.USAGE_ERROR);
+  }
+
+  const cwd = options.cwd || process.cwd();
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+
+  // Resolve resume sessionId — explicit ID wins (background worker passes it).
+  let resumeSessionId = options["resume-session-id"] || null;
+  if (!resumeSessionId && options["resume-last"]) {
+    const candidate = resolveResumeCandidate(workspaceRoot);
+    if (candidate?.available) {
+      resumeSessionId = candidate.candidate.kimiSessionId;
+    }
+  }
+
+  const streamConfig = {
+    prompt,
+    model: options.model || null,
+    cwd,
+    resumeSessionId,
+  };
+
+  // Background mode — detach + record in job-control state.
+  if (options.background) {
+    const job = createJob({ kind: "task", command: "task", prompt, workspaceRoot, cwd });
+    const submission = runStreamingJobInBackground({
+      job,
+      companionScript: SELF,
+      config: streamConfig,
+      workspaceRoot,
+      cwd,
+    });
+    process.stdout.write(JSON.stringify(submission, null, 2) + "\n");
+    process.exit(0);
+  }
+
+  // Foreground — call streaming but DON'T echo progress to stderr.
+  // codex v1-review C-M1: earlier draft wrote each text block to stderr
+  // AND then wrote `result.response` to stdout at the end, which showed
+  // the same content twice in non-JSON mode. Simpler contract: onEvent is
+  // a no-op in companion's foreground path (callers that want live
+  // per-event output use --stream via /kimi:ask); task just returns the
+  // final aggregated response. Matches /kimi:ask's verbatim-stdout shape.
+  const result = await callKimiStreaming({
+    ...streamConfig,
+    onEvent: () => {},
+  });
+
+  // Persist kimiSessionId for future resume — track via a synthetic completed job.
+  if (result.ok && result.sessionId) {
+    const job = createJob({ kind: "task", command: "task", prompt, workspaceRoot, cwd });
+    upsertJob(workspaceRoot, {
+      id: job.id,
+      status: "completed",
+      phase: "done",
+      kimiSessionId: result.sessionId,
+      pid: null,
+    });
+  }
+
+  if (options.json) {
+    process.stdout.write(JSON.stringify({ ...result, resumed: Boolean(resumeSessionId) }, null, 2) + "\n");
+  } else {
+    if (!result.ok) {
+      process.stderr.write(`\nError: ${result.error}\n`);
+    } else {
+      process.stdout.write(result.response + "\n");
+    }
+  }
+
+  process.exit(result.ok ? KIMI_EXIT.OK : (result.status ?? 1));
 }
 
 // ── Dispatcher ─────────────────────────────────────────────
