@@ -299,9 +299,10 @@ import {
   cancelJob,
   resolveResumeCandidate,
   readStoredJobResult,
+  sortJobsNewestFirst,
   SESSION_ID_ENV,
 } from "./lib/job-control.mjs";
-import { upsertJob, getConfig, setConfig } from "./lib/state.mjs";
+import { upsertJob, getConfig, setConfig, listJobs } from "./lib/state.mjs";
 ```
 
 Also add a `SELF` constant (the file's own absolute path — needed for background respawn):
@@ -395,19 +396,16 @@ async function runTask(rawArgs) {
     process.exit(0);
   }
 
-  // Foreground streaming — progress to stderr only in non-JSON mode.
+  // Foreground — call streaming but DON'T echo progress to stderr.
+  // codex v1-review C-M1: earlier draft wrote each text block to stderr
+  // AND then wrote `result.response` to stdout at the end, which showed
+  // the same content twice in non-JSON mode. Simpler contract: onEvent is
+  // a no-op in companion's foreground path (callers that want live
+  // per-event output use --stream via /kimi:ask); task just returns the
+  // final aggregated response. Matches /kimi:ask's verbatim-stdout shape.
   const result = await callKimiStreaming({
     ...streamConfig,
-    onEvent: (event) => {
-      if (!options.json && event.role === "assistant") {
-        const blocks = event.content || [];
-        for (const b of blocks) {
-          if (b && b.type === "text" && typeof b.text === "string") {
-            process.stderr.write(b.text);
-          }
-        }
-      }
-    },
+    onEvent: () => {},
   });
 
   // Persist kimiSessionId for future resume — track via a synthetic completed job.
@@ -496,6 +494,11 @@ function runJobResult(rawArgs) {
   const { positionals } = parseArgs(rawArgs, { booleanOptions: ["json"] });
   const cwd = process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  // Passing no reference already falls back to the most-recent terminal
+  // job (resolveResultJob's documented behavior). Users who forget the
+  // jobId just run `/kimi:result` — the latest is returned (gemini
+  // v1-review G-M1: this is the already-working escape hatch, no new
+  // flag needed).
   const reference = positionals[0] || null;
 
   const job = resolveResultJob(workspaceRoot, reference);
@@ -519,16 +522,41 @@ function runJobResult(rawArgs) {
 }
 
 function runJobCancel(rawArgs) {
-  const { positionals } = parseArgs(rawArgs, { booleanOptions: ["json"] });
+  const { options, positionals } = parseArgs(rawArgs, {
+    booleanOptions: ["json", "any-session"],
+  });
   const cwd = process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const reference = positionals[0] || null;
 
-  const job = resolveCancelableJob(workspaceRoot, reference);
+  // `resolveCancelableJob(workspaceRoot, null)` filters to current-session
+  // cancelable jobs by default (intentional safety — no accidentally
+  // cancelling someone else's job). `--any-session` bypasses that filter
+  // so a user in a new terminal can cancel a job they submitted earlier
+  // (gemini v1-review G-H3 / G-M1). Explicit jobId already matches
+  // across sessions, so this flag is only useful when the user doesn't
+  // remember the id.
+  let job;
+  if (!reference && options["any-session"]) {
+    // Read listJobs directly and pick newest cancelable (queued/running)
+    // without the session filter. Equivalent to gemini's approach when
+    // an explicit id is given.
+    const active = listJobs(workspaceRoot).filter(
+      (j) => j.status === "queued" || j.status === "running"
+    );
+    job = sortJobsNewestFirst(active)[0] || null;
+  } else {
+    job = resolveCancelableJob(workspaceRoot, reference);
+  }
+
   if (!job) {
     process.stdout.write(JSON.stringify({
       ok: false,
-      error: reference ? `No cancellable job matches "${reference}"` : "No active jobs to cancel",
+      error: reference
+        ? `No cancellable job matches "${reference}"`
+        : (options["any-session"]
+          ? "No active jobs in any session"
+          : "No active jobs for the current session — pass a jobId or --any-session to reach older terminals"),
     }, null, 2) + "\n");
     process.exit(1);
   }
@@ -610,7 +638,10 @@ Subcommands:
   status [job-id] [--all] [--wait] [--json]
                                        Show background-job status.
   result [job-id] [--json]             Fetch a completed job's full output.
-  cancel [job-id] [--json]             Cancel a running background job.
+  cancel [job-id] [--any-session] [--json]
+                                       Cancel a running background job. Default scope is current
+                                       terminal session; --any-session reaches jobs submitted from
+                                       other terminals (useful when the jobId is forgotten).
   task-resume-candidate [--json]       Probe for a resumable prior task (used by /kimi:rescue).
 
 (Internal: _worker / _stream-worker are background re-entry points; do not call directly.)`;
@@ -700,11 +731,17 @@ async function dispatchStreamWorker(rawArgs) {
     config = JSON.parse(fsMod.readFileSync(configFile, "utf8"));
   } catch (e) {
     process.stderr.write(`_stream-worker: cannot load config ${configFile}: ${e.message}\n`);
+    try { fsMod.unlinkSync(configFile); } catch { /* ignore */ }
     process.exit(1);
   }
-  await runStreamingWorker(jobId, workspaceRoot, config);
-  // Clean up the temporary config file (written by runStreamingJobInBackground).
-  try { fsMod.unlinkSync(configFile); } catch { /* ignore */ }
+  // try/finally so a thrown runStreamingWorker doesn't leak the tmpfile
+  // (codex v1-review C-M2). unlinkSync is itself try-wrapped in case the
+  // file was never written or was already swept by the orphan cleanup.
+  try {
+    await runStreamingWorker(jobId, workspaceRoot, config);
+  } finally {
+    try { fsMod.unlinkSync(configFile); } catch { /* ignore */ }
+  }
   process.exit(0);
 }
 ```
@@ -761,7 +798,12 @@ After `parseArgs`, add the toggle logic BEFORE building the status object:
 
 ```js
   // Review-gate toggle (spec §4.2 `/kimi:setup --enable/disable-review-gate`).
-  // Writes to ~/.claude/plugins/kimi/state.json via getConfig/setConfig.
+  // State is PER-WORKSPACE (codex v1-review C-M3): getConfig/setConfig route
+  // through `resolveStateFile(workspaceRoot)` which slugs the repo path
+  // under ~/.claude/plugins/kimi/<workspace-slug>/state.json. Enabling the
+  // gate in one repo does NOT enable it globally. Document this in the
+  // user-visible output below + run the toggle from the repo you want
+  // gated.
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
     process.stderr.write("Error: pass only one of --enable-review-gate / --disable-review-gate.\n");
     process.exit(KIMI_EXIT.USAGE_ERROR);
@@ -786,6 +828,9 @@ Also add `stopReviewGate` to the status object so users can confirm state via `s
     configured_models: configured,
     installers,
     stopReviewGate: getConfig(workspaceRoot).stopReviewGate === true,
+    // Tell consumers exactly WHICH workspace this gate setting belongs to
+    // so it's obvious when (and where) to toggle (C-M3).
+    stopReviewGateWorkspace: workspaceRoot,
   };
 ```
 
@@ -970,15 +1015,24 @@ function parseStopReviewOutput(rawOutput) {
       reason: "The stop-time Kimi review returned no output. Run /kimi:review --wait manually or bypass the gate.",
     };
   }
-  const firstLine = text.split(/\r?\n/, 1)[0].trim();
-  if (firstLine.startsWith("ALLOW:")) return { ok: true, reason: null };
-  if (firstLine.startsWith("BLOCK:")) {
-    const reason = firstLine.slice("BLOCK:".length).trim() || text;
-    return { ok: false, reason: `Kimi stop-time review found issues: ${reason}` };
+  // Scan ALL lines for the ALLOW/BLOCK sentinel (gemini v1-review G-C1:
+  // kimi empirically adds prose preambles — "好的，这是审查：" — before
+  // structured output, which would cause the gemini strict-first-line
+  // parser to fail and default to BLOCK, trapping users in their session).
+  // First match wins; "ambiguous" inputs where both appear are extremely
+  // unlikely in practice and would BLOCK first due to ALLOW being the
+  // expected bias (see template).
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("ALLOW:")) return { ok: true, reason: null };
+    if (trimmed.startsWith("BLOCK:")) {
+      const reason = trimmed.slice("BLOCK:".length).trim() || text;
+      return { ok: false, reason: `Kimi stop-time review found issues: ${reason}` };
+    }
   }
   return {
     ok: false,
-    reason: "The stop-time Kimi review returned an unexpected answer. Run /kimi:review --wait manually or bypass the gate.",
+    reason: "The stop-time Kimi review returned an unexpected answer (no ALLOW/BLOCK sentinel found). Run /kimi:review --wait manually or bypass the gate.",
   };
 }
 
@@ -1057,7 +1111,7 @@ main();
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs\" SessionStart",
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
@@ -1141,14 +1195,16 @@ You are Kimi, acting as a final-review gatekeeper for a Claude Code session that
 
 Decide whether the work above is safe to stop on, or whether Claude should keep going before this session closes.
 
-## Output contract (STRICT)
+## Output contract
 
-Return EXACTLY one line, as the FIRST line of your response. Nothing before it, no markdown fence.
+Your response MUST contain exactly one line that starts with `ALLOW:` or `BLOCK:`. Put it as the FIRST line of your response — any prose preamble (e.g. "好的，" / "Here is my review:") will be tolerated but is discouraged because it slows the hook down.
 
 - `ALLOW: <one-short-sentence-reason>` — the work looks complete enough to stop.
 - `BLOCK: <one-short-sentence-reason>` — the work has obvious gaps, unfinished tasks, broken invariants, or unchecked failure modes; Claude should not stop yet.
 
-After that required first line, you MAY add more lines explaining specifics (max ~10 lines). Do NOT translate `ALLOW:` / `BLOCK:` — they are literal tokens the hook parses.
+After that line, you MAY add more lines explaining specifics (max ~10 lines). Do NOT translate `ALLOW:` / `BLOCK:` — they are literal English tokens the hook scans for.
+
+The hook will pick the FIRST occurrence of either sentinel it encounters (line-by-line scan), so putting them first keeps behavior predictable.
 
 ## What counts as BLOCK
 
@@ -1253,7 +1309,11 @@ as flags:
 | `--model <model>` | Override model |
 | `-m <model>` | Alias for `--model` |
 
-(Note: `--write` and `--effort` from gemini-agent are NOT supported — kimi has no approval-mode or reasoning-budget equivalent in v0.1. Drop them if present in the request.)
+## Flags NOT supported (drop silently if user passes them)
+
+Gemini has `--write` (approval-mode gate) and `--effort` (reasoning budget). **Kimi v0.1 has no equivalents.** If a user-supplied request contains these flags, **strip them before forwarding** — do NOT pass them to `kimi-companion.mjs task`, because the companion's parseArgs will treat unknown flags as positional prompt tokens OR reject them with exit 2.
+
+**Behavior difference users should know (gemini v1-review G-H1)**: `/gemini:rescue` defaults to plan-mode (read-only); adding `--write` grants edit permission. `/kimi:rescue` has NO plan-mode equivalent — kimi's tool use is governed only by what the prompt asks. Users habituated to gemini's safety net should be warned explicitly: if they want kimi to STOP SHORT of editing files, they must phrase the prompt that way ("analyze only; do NOT modify any files"). We do not synthesize a plan-mode lock.
 
 ## Rules
 
@@ -1319,6 +1379,12 @@ Execution mode:
 - `--background` and `--wait` are execution flags. Do not forward them to `task`.
 - `--model`, `--resume-last`, `--fresh` are runtime flags. Preserve them.
 
+Flags to drop silently (gemini v1-review G-H2):
+- `--write` — gemini-specific (approval mode gate); kimi has no equivalent. Drop before forwarding. Brief note to the user: "Kimi doesn't distinguish plan-mode from write-mode; it will act on what the prompt asks."
+- `--effort low|medium|high` — gemini-specific (reasoning budget). Drop silently; no user-visible note needed.
+
+Forwarding any of the above to `task` would exit 2 (unknown flag); the intent behind them cannot be honored in v0.1, so silent drop + the `--write` warning is the right UX.
+
 Operating rules:
 - The subagent is a thin forwarder only. It should use one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/kimi-companion.mjs" task ...` and return that command's stdout as-is.
 - Return the Kimi companion stdout verbatim to the user.
@@ -1380,7 +1446,7 @@ Do NOT auto-fix any issues. Ask the user which issues to address.
 ```markdown
 ---
 description: Cancel an active Kimi background job
-argument-hint: '[job-id]'
+argument-hint: '[job-id] [--any-session]'
 disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---
@@ -1392,7 +1458,12 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/kimi-companion.mjs" cancel "$ARGUMENTS" --js
 ```
 
 Report whether the job was successfully cancelled.
-If no active job was found, tell the user.
+
+If no active job was found AND the user did not pass a jobId, the error will hint at `--any-session`. In that case, tell the user:
+- "No active Kimi jobs from this terminal. If you submitted one from a different terminal, try `/kimi:cancel --any-session` or `/kimi:cancel <jobId>`."
+- Do NOT silently re-run with `--any-session` — that could cancel an unrelated job someone else is running.
+
+If no active jobs exist anywhere (with `--any-session`), just tell the user there are no cancellable jobs.
 ```
 
 - [ ] **Step 5: Verify**
@@ -1469,8 +1540,24 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
   [ "$STATUS" = "completed" ] && break
   sleep 3
 done
-# Probe candidate
-node plugins/kimi/scripts/kimi-companion.mjs task-resume-candidate --json
+# Probe candidate BEFORE resume — assert the wiring actually surfaces a
+# kimiSessionId. Without this, a buggy sed pass in Task 4.1 Step 3 (field
+# rename) could leave resolveResumeCandidate returning `geminiSessionId`
+# and the subsequent resume call would silently run without --resume-session-id
+# but the test would still pass if the fresh session happens to mention
+# "4242" by chance (codex v1-review C-M4).
+CAND=$(node plugins/kimi/scripts/kimi-companion.mjs task-resume-candidate --json)
+echo "candidate: $CAND"
+echo "$CAND" | python3 -c '
+import json, sys, re
+d = json.loads(sys.stdin.read())
+assert d.get("available") is True, f"task-resume-candidate must report available:true; got {d}"
+cand = d.get("candidate") or {}
+sid = cand.get("kimiSessionId")
+assert sid and re.fullmatch(r"[0-9a-f-]{36}", sid), f"candidate.kimiSessionId must be a valid uuid; got {sid}"
+print(f"candidate OK — sid {sid[:8]}…")
+'
+
 # Run --resume-last
 OUT=$(node plugins/kimi/scripts/kimi-companion.mjs task --resume-last --json "What number did I give you earlier? Answer only with the number.")
 echo "$OUT" | python3 -c 'import json, sys; d = json.load(sys.stdin); assert d["ok"], d; assert d.get("resumed") is True, "resumed flag should be True"; print("T7 resume PASS — response:", d["response"][:50], "resumed:", d["resumed"])'
@@ -1573,7 +1660,24 @@ Expected: `phase-4-background` tag present.
 - `shellEscape` in session-lifecycle-hook already quotes env values safely.
 - No shell interpolation in the spawn argv path; all args native-string.
 
-**Review integration** (plan-v1 round deferred): this plan has NOT yet been through 3-way review. Before execution, dispatch codex + gemini per `feedback_3way_review_specs.md`. Integrate findings, then execute.
+**Review integration (plan v1 → v2, 2026-04-20)**: one round of 3-way review integrated. Codex 0C/0H/4M; gemini 2C/3H/2M. All C/H closed + most M:
+
+- **gemini G-C1** (stop-gate strict parsing): parseStopReviewOutput now scans ALL lines for ALLOW:/BLOCK: sentinel rather than strictly first-line; tolerates kimi's empirically-observed prose preambles. Template text softened to match ("first line preferred, not required"). Task 4.5 Step 3 + Task 4.6.
+- **gemini G-C2** (SessionStart 5s too aggressive): hooks.json SessionStart timeout bumped 5 → 15 seconds to cover cold-disk startups. SessionEnd left at 5 (trivial cleanup work). Task 4.5 Step 4.
+- **gemini G-H1** (`--write` safety semantics): kimi-agent.md + rescue.md both explicitly document the plan-vs-write-mode difference and warn users migrating from gemini-plugin-cc. Not synthesizing a read-only lock in v0.1 — defer to prompt-discipline + spec §4.2 wording ("we do NOT synthesize a plan-mode lock"). Task 4.7 + 4.8.
+- **gemini G-H2** (legacy flag exit 2): kimi-agent.md + rescue.md now explicitly say "drop --write and --effort before forwarding". Companion parseArgs would reject them anyway, so dropping in the rescue/agent layer prevents user-visible failure. Task 4.7 + 4.8.
+- **gemini G-H3 + G-M1** (cross-session job visibility + findback UX): `runJobCancel` gained `--any-session` to bypass the per-session safety filter. `runJobResult` already defaults to latest terminal job — no change needed. cancel.md explicitly warns NOT to auto-retry with `--any-session` (that could cancel someone else's job). Task 4.3 + 4.8.
+- **codex C-M1** (double stdout/stderr output): `runTask` foreground no longer streams per-event to stderr; sole emission is the final `result.response` on stdout. Keeps /kimi:task's contract aligned with /kimi:ask's stdout-verbatim pattern. Task 4.2 Step 2.
+- **codex C-M2** (tmpfile leak on worker throw): `dispatchStreamWorker` wraps `runStreamingWorker` in try/finally so `unlinkSync` always runs. Task 4.4 Step 1.
+- **codex C-M3** (config scope): runSetup comment + status field `stopReviewGateWorkspace` make per-workspace scope user-visible. Task 4.5 Step 1.
+- **codex C-M4** (weak T7 assertion): T7 now asserts `task-resume-candidate` returns `available: true` AND `candidate.kimiSessionId` matches the uuid regex BEFORE running the resume call. Catches any silent sed rename miss in Task 4.1. Task 4.9 Step 3.
+
+**Still deferred** (v1 Low + codex OK items):
+- gemini G-M2 (stop-gate latency docs) — acceptable; toggle is opt-in
+- gemini L1/L3 (agent syntax + 3-way review gate check) — informational
+- codex OK items (8 issues all resolved already; listed for audit)
+
+**Review round 2** skipped per `feedback_review_diminishing_returns.md`: all Critical + High + High-value Medium integrated; remaining findings are documentation-only.
 
 ---
 
@@ -1587,7 +1691,7 @@ Two execution options:
 
 **2. Inline Execution** — do it in-session.
 
-**Pre-execution review:** this is a large-surface plan (9 tasks, ~60 steps, multiple new files including hooks/agents/commands). Strong candidate for 3-way review before execution per `feedback_3way_review_specs.md`.
+**Pre-execution review status:** Round 1 of 3-way review (codex + gemini) integrated into v2. All Critical (2) + High (3) + most Medium (4/6) closed. Round 2 skipped per `feedback_review_diminishing_returns.md` (diminishing returns expected; remaining findings are documentation-only).
 
 **Which approach?**
 
