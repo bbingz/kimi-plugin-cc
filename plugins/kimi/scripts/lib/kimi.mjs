@@ -10,6 +10,7 @@ import {
   RETRY_NOTICE,
   extractReviewJson,
   validateReviewOutput,
+  runReviewPipeline,
   reviewError as reviewErrorImpl,
 } from "./review.mjs";
 export {
@@ -680,122 +681,12 @@ const reviewError = reviewErrorImpl;
 // `resumeSessionId` is a best-effort nudge; kimi 1.36's session store retains
 // prior messages so the model sees its own malformed output when correcting.
 export function callKimiReview({ context, focus, schemaPath, model, cwd, timeout, truncated = false }) {
-  // Schema load try/catch (codex v1-review C-H2). Without this, a missing or
-  // malformed schema file would throw sync inside buildReviewPrompt and
-  // escape runReview as an uncaught exception. Surface as reviewError instead.
-  let firstPrompt;
-  try {
-    firstPrompt = buildReviewPrompt({ context, focus, schemaPath });
-  } catch (e) {
-    return reviewError({
-      error: `Failed to load review schema at ${schemaPath}: ${e.message}`,
-      truncated,
-      retry_used: false,
-    });
-  }
-
-  const firstResult = callKimi({ prompt: firstPrompt, model, cwd, timeout });
-  if (!firstResult.ok) {
-    return reviewError({
-      error: firstResult.error || "kimi call failed",
-      transportError: { status: firstResult.status ?? null, partialResponse: firstResult.partialResponse ?? null },
-      truncated,
-      retry_used: false,
-      sessionId: firstResult.sessionId ?? null,
-    });
-  }
-
-  const firstExtracted = extractReviewJson(firstResult.response);
-  let firstValidation = null;
-  if (firstExtracted.ok) {
-    firstValidation = validateReviewOutput(firstExtracted.data);
-    if (firstValidation.ok) {
-      return {
-        ok: true,
-        ...firstExtracted.data,
-        truncated,
-        truncation_notice: truncated ? TRUNCATION_NOTICE : null,
-        retry_used: false,
-        retry_notice: null,
-        sessionId: firstResult.sessionId,
-      };
-    }
-  }
-
-  // Operator breadcrumb (gemini v1-review G-L3). Goes to stderr so structured
-  // consumers keep getting clean JSON on stdout, and so background jobs log
-  // the retry rate over time for observability.
-  process.stderr.write("Warning: kimi review response failed parse/validation; retrying once with error hint...\n");
-
-  // Retry once with error hint. Reuse the same session so kimi sees the prior
-  // exchange (best-effort; if session didn't persist, the hint alone still
-  // steers correction).
-  const retryHint = firstExtracted.ok
-    ? `schema validation errors: ${firstValidation.errors.slice(0, 3).join("; ")}`
-    : `parse failure (${firstExtracted.error}${firstExtracted.parseError ? ": " + firstExtracted.parseError : ""})`;
-  let retryPrompt;
-  try {
-    retryPrompt = buildReviewPrompt({ context, focus, schemaPath, retryHint });
-  } catch (e) {
-    return reviewError({
-      error: `Failed to rebuild review prompt for retry: ${e.message}`,
-      firstRawText: firstResult.response,
-      truncated,
-      retry_used: true,
-      sessionId: firstResult.sessionId ?? null,
-    });
-  }
-  const retryResult = callKimi({
-    prompt: retryPrompt,
-    model,
-    cwd,
-    timeout,
-    resumeSessionId: firstResult.sessionId || null,
+  return runReviewPipeline({
+    buildPrompt: buildReviewPrompt,
+    callLLM: callKimi,
+    context, focus, schemaPath, model, cwd, timeout, truncated,
+    retryWarning: "Warning: kimi review response failed parse/validation; retrying once with error hint...\n",
   });
-  if (!retryResult.ok) {
-    return reviewError({
-      error: `Retry kimi call failed: ${retryResult.error}`,
-      transportError: { status: retryResult.status ?? null, partialResponse: retryResult.partialResponse ?? null },
-      firstRawText: firstResult.response,
-      truncated,
-      retry_used: true,
-      sessionId: retryResult.sessionId ?? null,
-    });
-  }
-
-  const retryExtracted = extractReviewJson(retryResult.response);
-  if (!retryExtracted.ok) {
-    return reviewError({
-      error: `Review failed after 1 retry: ${retryExtracted.error}`,
-      parseError: retryExtracted.parseError,
-      rawText: retryResult.response,
-      firstRawText: firstResult.response,
-      truncated,
-      retry_used: true,
-      sessionId: retryResult.sessionId ?? null,
-    });
-  }
-  const retryValidation = validateReviewOutput(retryExtracted.data);
-  if (!retryValidation.ok) {
-    return reviewError({
-      error: `Review failed schema validation after 1 retry: ${retryValidation.errors.join("; ")}`,
-      rawText: retryResult.response,
-      firstRawText: firstResult.response,
-      truncated,
-      retry_used: true,
-      sessionId: retryResult.sessionId ?? null,
-    });
-  }
-
-  return {
-    ok: true,
-    ...retryExtracted.data,
-    truncated,
-    truncation_notice: truncated ? TRUNCATION_NOTICE : null,
-    retry_used: true,
-    retry_notice: RETRY_NOTICE,
-    sessionId: retryResult.sessionId,
-  };
 }
 
 // ── Exports for Phase 2+ to consume ────────────────────────

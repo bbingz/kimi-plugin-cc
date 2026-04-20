@@ -152,3 +152,141 @@ export function reviewError({
     sessionId,
   };
 }
+
+// ── Pipeline orchestrator ──────────────────────────────────
+//
+// Drives the build → call → extract → validate → retry-once loop. Provider
+// injects:
+//   buildPrompt({ context, focus, schemaPath, retryHint }) → string
+//   callLLM({ prompt, model, cwd, timeout, resumeSessionId })
+//     → { ok, response, sessionId?, status?, partialResponse?, error? }
+// This is exactly the signature of kimi.mjs buildReviewPrompt + callKimi;
+// sibling plugins provide their own pair. The pipeline never imports a
+// provider module — all binding happens at the call site.
+//
+// Returns success-shape: { ok:true, ...parsedReview, truncated, truncation_notice,
+// retry_used, retry_notice, sessionId }, or reviewError-shape on failure.
+//
+// `retryWarning` defaults to a neutral string so sibling plugins that inherit
+// this module get the same observability breadcrumb; callers can override
+// (or pass null to suppress) if they need a provider-specific label.
+export function runReviewPipeline({
+  buildPrompt, callLLM,
+  context, focus = null, schemaPath,
+  model = null, cwd = process.cwd(), timeout,
+  truncated = false,
+  retryWarning = "Warning: review response failed parse/validation; retrying once with error hint...\n",
+} = {}) {
+  let firstPrompt;
+  try {
+    firstPrompt = buildPrompt({ context, focus, schemaPath });
+  } catch (e) {
+    return reviewError({
+      error: `Failed to build review prompt: ${e.message}`,
+      truncated,
+      retry_used: false,
+    });
+  }
+
+  const firstResult = callLLM({ prompt: firstPrompt, model, cwd, timeout });
+  if (!firstResult || !firstResult.ok) {
+    return reviewError({
+      error: (firstResult && firstResult.error) || "LLM call failed",
+      transportError: {
+        status: (firstResult && firstResult.status) ?? null,
+        partialResponse: (firstResult && firstResult.partialResponse) ?? null,
+      },
+      truncated,
+      retry_used: false,
+      sessionId: (firstResult && firstResult.sessionId) ?? null,
+    });
+  }
+
+  const firstExtracted = extractReviewJson(firstResult.response);
+  let firstValidation = null;
+  if (firstExtracted.ok) {
+    firstValidation = validateReviewOutput(firstExtracted.data);
+    if (firstValidation.ok) {
+      return {
+        ok: true,
+        ...firstExtracted.data,
+        truncated,
+        truncation_notice: truncated ? TRUNCATION_NOTICE : null,
+        retry_used: false,
+        retry_notice: null,
+        sessionId: firstResult.sessionId,
+      };
+    }
+  }
+
+  if (retryWarning) process.stderr.write(retryWarning);
+
+  const retryHint = firstExtracted.ok
+    ? `schema validation errors: ${firstValidation.errors.slice(0, 3).join("; ")}`
+    : `parse failure (${firstExtracted.error}${firstExtracted.parseError ? ": " + firstExtracted.parseError : ""})`;
+
+  let retryPrompt;
+  try {
+    retryPrompt = buildPrompt({ context, focus, schemaPath, retryHint });
+  } catch (e) {
+    return reviewError({
+      error: `Failed to rebuild review prompt for retry: ${e.message}`,
+      firstRawText: firstResult.response,
+      truncated,
+      retry_used: true,
+      sessionId: firstResult.sessionId ?? null,
+    });
+  }
+  const retryResult = callLLM({
+    prompt: retryPrompt,
+    model, cwd, timeout,
+    resumeSessionId: firstResult.sessionId || null,
+  });
+  if (!retryResult || !retryResult.ok) {
+    return reviewError({
+      error: `Retry LLM call failed: ${(retryResult && retryResult.error) || "unknown"}`,
+      transportError: {
+        status: (retryResult && retryResult.status) ?? null,
+        partialResponse: (retryResult && retryResult.partialResponse) ?? null,
+      },
+      firstRawText: firstResult.response,
+      truncated,
+      retry_used: true,
+      sessionId: (retryResult && retryResult.sessionId) ?? null,
+    });
+  }
+
+  const retryExtracted = extractReviewJson(retryResult.response);
+  if (!retryExtracted.ok) {
+    return reviewError({
+      error: `Review failed after 1 retry: ${retryExtracted.error}`,
+      parseError: retryExtracted.parseError,
+      rawText: retryResult.response,
+      firstRawText: firstResult.response,
+      truncated,
+      retry_used: true,
+      sessionId: retryResult.sessionId ?? null,
+    });
+  }
+  const retryValidation = validateReviewOutput(retryExtracted.data);
+  if (!retryValidation.ok) {
+    return reviewError({
+      error: `Review failed schema validation after 1 retry: ${retryValidation.errors.join("; ")}`,
+      rawText: retryResult.response,
+      firstRawText: firstResult.response,
+      truncated,
+      retry_used: true,
+      sessionId: retryResult.sessionId ?? null,
+    });
+  }
+
+  return {
+    ok: true,
+    ...retryExtracted.data,
+    truncated,
+    truncation_notice: truncated ? TRUNCATION_NOTICE : null,
+    retry_used: true,
+    retry_notice: RETRY_NOTICE,
+    sessionId: retryResult.sessionId,
+  };
+}
