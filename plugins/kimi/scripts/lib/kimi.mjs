@@ -313,9 +313,20 @@ function buildKimiArgs({ prompt, model, useStdinForPrompt, resumeSessionId, extr
   return args;
 }
 
+// Map a posix signal name to the conventional exit code (128 + N).
+// Used to recover lost exit-code semantics when Node reports
+// status=null + signal=<name> for signaled children (codex C1).
+function statusFromSignal(signal) {
+  if (signal === "SIGINT") return KIMI_EXIT.SIGINT;
+  if (signal === "SIGTERM") return KIMI_EXIT.SIGTERM;
+  return null;
+}
+
 // Map non-zero exit codes to user-visible error messages per
 // kimi-cli-runtime exit-code table + probe 05 findings. Prefer structured
 // pre-flight check (see callKimi) over text grep; this is the fallback.
+// SIGINT message includes "interrupted" keyword so ask.md's declarative
+// template router (gemini Phase-2-review G-H2) can match it alongside SIGTERM.
 function describeKimiExit({ status, stdout, stderr }) {
   if (status === KIMI_EXIT.CONFIG_ERROR && (stdout || "").includes(LLM_NOT_SET_MARKER)) {
     return "Model not configured in ~/.kimi/config.toml (LLM not set)";
@@ -324,7 +335,7 @@ function describeKimiExit({ status, stdout, stderr }) {
     const clip = (stderr || "").slice(0, 200).trim();
     return clip || "Invalid CLI usage (exit 2)";
   }
-  if (status === KIMI_EXIT.SIGINT) return "Cancelled by user (SIGINT)";
+  if (status === KIMI_EXIT.SIGINT) return "Interrupted by user (SIGINT)";
   if (status === KIMI_EXIT.SIGTERM) return "Request was interrupted (SIGTERM)";
   const clip = (stderr || "").slice(0, 200).trim();
   return clip ? `exit ${status}: ${clip}` : `exit ${status}`;
@@ -384,10 +395,14 @@ export function callKimi({
   if (result.error) {
     return errorResult({ error: result.error.message, events: [] });
   }
-  if (result.status !== 0) {
+
+  // Map signaled exits (status=null + signal=SIGINT/SIGTERM) back to 130/143
+  // so describeKimiExit + caller's process.exit() preserve POSIX semantics.
+  const effectiveStatus = result.status ?? statusFromSignal(result.signal);
+  if (effectiveStatus !== 0) {
     return errorResult({
-      status: result.status,
-      error: describeKimiExit(result),
+      status: effectiveStatus,
+      error: describeKimiExit({ ...result, status: effectiveStatus }),
       stdout: result.stdout,
     });
   }
@@ -476,8 +491,17 @@ export function callKimiStreaming({
       try { child.kill("SIGTERM"); } catch { /* ignore */ }
     }, timeout);
 
-    if (useStdinForPrompt) child.stdin.write(prompt);
-    child.stdin.end();
+    // Swallow expected broken-pipe errors when kimi exits early (e.g. rejects a
+    // bad flag before we finish writing a 150KB prompt). Without this, EPIPE
+    // escapes Promise scope and crashes the companion (codex Phase-2-review H2).
+    child.stdin.on("error", (err) => {
+      if (err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) return;
+      /* otherwise let close/error handlers surface it via child.on("error") */
+    });
+    try {
+      if (useStdinForPrompt && child.stdin.writable) child.stdin.write(prompt);
+      if (child.stdin.writable) child.stdin.end();
+    } catch { /* child already exited; close handler will resolve */ }
 
     function processLine(raw) {
       const ev = parseKimiEventLine(raw);
@@ -506,7 +530,7 @@ export function callKimiStreaming({
       stderrBuf += chunk.toString();
     });
 
-    child.on("close", (status) => {
+    child.on("close", (status, signal) => {
       clearTimeout(timer);
       lineBuffer += decoder.end();
       if (lineBuffer.trim()) {
@@ -515,6 +539,7 @@ export function callKimiStreaming({
       }
 
       // Unified timeout contract (codex C6): same shape as other errors.
+      // Check BEFORE signal mapping — our SIGTERM was self-inflicted.
       if (timedOut) {
         resolve(errorResult({
           status: KIMI_STATUS_TIMED_OUT,
@@ -525,10 +550,14 @@ export function callKimiStreaming({
         return;
       }
 
-      if (status !== 0) {
+      // Map signaled exits back to 128+N (codex Phase-2-review H1). Node emits
+      // status=null + signal when the child dies to a signal; without this the
+      // caller's `result.status ?? 1` folds SIGINT/SIGTERM into a plain exit 1.
+      const effectiveStatus = status ?? statusFromSignal(signal);
+      if (effectiveStatus !== 0) {
         resolve(errorResult({
-          status,
-          error: describeKimiExit({ status, stdout: textParts.join(""), stderr: stderrBuf }),
+          status: effectiveStatus,
+          error: describeKimiExit({ status: effectiveStatus, stdout: textParts.join(""), stderr: stderrBuf }),
           events,
           textParts,
         }));

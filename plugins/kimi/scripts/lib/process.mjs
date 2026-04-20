@@ -11,10 +11,14 @@ export function runCommand(command, args = [], options = {}) {
     stdio: options.stdio ?? "pipe",
   });
 
+  // When a child is killed by a signal, spawnSync returns status=null + signal set.
+  // Collapsing null→0 would mis-flag signaled exits as success (codex Phase-2-review C1).
+  // Preserve null here; callers that need POSIX-shape status (signal → 128+N) can
+  // consult `signal` and map themselves.
   return {
     command,
     args,
-    status: result.status ?? 0,
+    status: result.status ?? null,
     signal: result.signal ?? null,
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
