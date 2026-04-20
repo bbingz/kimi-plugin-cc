@@ -617,18 +617,43 @@ function shouldUnpackBlob(sub, rest) {
   return false;
 }
 
-// Placeholders for Task 4.4 (dispatchWorker / dispatchStreamWorker).
-// These will be replaced with real implementations in the next task.
-// Present here so the dispatcher switch can reference them without
-// forward-reference issues and so `node --check` passes.
-function dispatchWorker(_rest) {
-  process.stderr.write("not implemented yet (Task 4.4)\n");
-  process.exit(2);
+function dispatchWorker(rawArgs) {
+  // rawArgs: [jobId, workspaceRoot, ...originalCompanionArgs]
+  if (rawArgs.length < 3) {
+    process.stderr.write("_worker requires: <jobId> <workspaceRoot> <forwarded-args...>\n");
+    process.exit(2);
+  }
+  const [jobId, workspaceRoot, ...forwarded] = rawArgs;
+  runWorker(jobId, workspaceRoot, SELF, forwarded);
+  // runWorker persists state directly; exit normally so the detached child cleans up.
+  process.exit(0);
 }
 
-function dispatchStreamWorker(_rest) {
-  process.stderr.write("not implemented yet (Task 4.4)\n");
-  process.exit(2);
+async function dispatchStreamWorker(rawArgs) {
+  // rawArgs: [jobId, workspaceRoot, configFile]
+  if (rawArgs.length < 3) {
+    process.stderr.write("_stream-worker requires: <jobId> <workspaceRoot> <configFile>\n");
+    process.exit(2);
+  }
+  const [jobId, workspaceRoot, configFile] = rawArgs;
+  const fsMod = await import("node:fs");
+  let config;
+  try {
+    config = JSON.parse(fsMod.readFileSync(configFile, "utf8"));
+  } catch (e) {
+    process.stderr.write(`_stream-worker: cannot load config ${configFile}: ${e.message}\n`);
+    try { fsMod.unlinkSync(configFile); } catch { /* ignore */ }
+    process.exit(1);
+  }
+  // try/finally so a thrown runStreamingWorker doesn't leak the tmp config file
+  // (codex v1-review C-M2). unlinkSync is itself try-wrapped in case the
+  // file was never written or was already swept by the orphan cleanup.
+  try {
+    await runStreamingWorker(jobId, workspaceRoot, config);
+  } finally {
+    try { fsMod.unlinkSync(configFile); } catch { /* ignore */ }
+  }
+  process.exit(0);
 }
 
 async function main() {

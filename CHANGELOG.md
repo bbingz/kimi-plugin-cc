@@ -2,6 +2,13 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-20 [Claude Sonnet 4.6 — Phase 4 Task 4.4: _worker + _stream-worker dispatch]
+
+- **status**: done
+- **scope**: plugins/kimi/scripts/kimi-companion.mjs
+- **summary**: Replaced `dispatchWorker` and `dispatchStreamWorker` placeholder functions (Task 4.3 stubs that emitted "not implemented yet" + exit 2) with real implementations. `dispatchWorker` is sync — validates args (≥3), destructures jobId/workspaceRoot/forwarded, calls `runWorker(jobId, workspaceRoot, SELF, forwarded)`, exits 0. `dispatchStreamWorker` is async — validates args (≥3), lazy-imports `node:fs`, loads JSON config from tmpfile, calls `await runStreamingWorker(...)` inside try/finally that always unlinks the tmpfile (C-M2 leak fix). Both emit usage-hint to stderr and exit 2 on too-few args. Syntax check passes; smoke tests confirm stderr hint + exit=2 for both subcommands.
+- **next**: Task 4.5 — remaining Phase 4 tasks.
+
 ## 2026-04-20 [Claude Sonnet 4.6 — Phase 4 Task 4.1: job-control + prompts port]
 
 - **status**: done
