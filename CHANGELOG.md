@@ -2,6 +2,22 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-20 [Claude Opus 4.7 — Phase 4 post-review polish]
+
+- **status**: done
+- **scope**: plugins/kimi/scripts/lib/job-control.mjs, plugins/kimi/scripts/kimi-companion.mjs
+- **summary**: Third impl-layer 3-way review (codex + gemini, parallel) after `phase-4-background` tag. Codex: 0C/0H/1M/3L. Gemini: 2C/2H/2M/4L. Integrated both signals that held up to scrutiny; declined findings already handled or explicitly Phase 5 scope.
+  - **codex C-M1 (Medium — integrated)**: pushed `--any-session` logic into `resolveCancelableJob(workspaceRoot, reference, {anySession})` as a library-level option. runJobCancel now just passes the flag through; companion.mjs no longer imports `listJobs` / `sortJobsNewestFirst` (unused after the refactor). Future callers reusing the library see the same semantics without re-implementing the session-filter bypass.
+  - **gemini G-H1 (High — integrated as docs)**: `/kimi:setup --enable-review-gate` now emits a stderr note at enable-time explaining the escape hatch (new terminal → `/kimi:setup --disable-review-gate`, or edit `stopReviewGate:false` in state.json). Addresses the "user traps themselves in a BLOCK loop" UX risk without adding a bypass flag (would weaken the gate's intent).
+- **Declined with rationale**:
+  - **codex C-L1/L2/L3** (gemini-reference comments in stop-review-gate-hook / kimi-agent / rescue): traceability citations explaining where each design decision came from. Keep.
+  - **gemini G-C1** (SessionEnd race + orphan logs): VERIFIED MITIGATED. `saveState` already calls `cleanupOrphanedFiles` synchronously when removing jobs; worker writes are try-wrapped. `writeFileSync` of state JSON is atomic enough for this concurrency pattern.
+  - **gemini G-C2** (job-control.mjs extraction coupling): explicitly Phase 5 scope — no action this phase.
+  - **gemini G-H2** (--write safety net): already documented in rescue.md + kimi-agent.md; no kimi-cli flag exists to enforce read-only mode; wait for kimi-cli to add one or v0.2 to synthesize.
+  - **gemini G-M1** (SessionEnd 5s timeout): SIGTERM to process group is correct; 5s is adequate for typical cleanup; silent failure is acceptable tradeoff.
+  - **gemini G-M2** (`kimi:kimi-agent` namespace): structurally required by Claude Code's `pluginName:agentName` convention.
+- **next**: author docs/superpowers/plans/YYYY-MM-DD-phase-5-adversarial-polish.md. Phase 5 closes v0.1: `/kimi:adversarial-review` + kimi-prompting references/ + lessons.md final + sibling-plugin extraction (review pipeline → shared `scripts/lib/review.mjs`, job-control adapter pattern per gemini G-C2).
+
 ## 2026-04-20 [Claude Opus 4.7 — Phase 4 background + agent]
 
 - **status**: done
