@@ -280,6 +280,149 @@ export function readSessionIdFromKimiJson(workDirPath) {
   }
 }
 
+// ── Sync call (spec §3.1, §3.5) ────────────────────────────
+
+// Build argv for `kimi -p ... --print --output-format stream-json ...`.
+// Two prompt-delivery modes (probe 03 + codex C1 verify):
+//   - "inline"  → pass prompt as `-p "<text>"` (default for < threshold)
+//   - "stdin"   → pass `-p ""` and write the prompt on stdin
+//                 (probe 03 empirically works on kimi 1.36; codex read
+//                 the source and warned this might fail — we prefer the
+//                 empirical truth, but Phase 2 Task 2.7 validates this
+//                 path with a 200KB test; if it fails, flip to tmpfile
+//                 fallback via a follow-up commit)
+function buildKimiArgs({ prompt, model, useStdinForPrompt, resumeSessionId, extraArgs }) {
+  const args = ["-p", useStdinForPrompt ? "" : prompt, "--print", "--output-format", "stream-json"];
+  if (model) args.push("-m", model);
+  if (resumeSessionId) args.push("-r", resumeSessionId);
+  if (extraArgs?.length) args.push(...extraArgs);
+  return args;
+}
+
+// Map non-zero exit codes to user-visible error messages per
+// kimi-cli-runtime exit-code table + probe 05 findings. Prefer structured
+// pre-flight check (see callKimi) over text grep; this is the fallback.
+function describeKimiExit({ status, stdout, stderr }) {
+  if (status === KIMI_EXIT.CONFIG_ERROR && (stdout || "").includes(LLM_NOT_SET_MARKER)) {
+    return "Model not configured in ~/.kimi/config.toml (LLM not set)";
+  }
+  if (status === KIMI_EXIT.USAGE_ERROR) {
+    const clip = (stderr || "").slice(0, 200).trim();
+    return clip || "Invalid CLI usage (exit 2)";
+  }
+  if (status === KIMI_EXIT.SIGINT) return "Cancelled by user (SIGINT)";
+  if (status === KIMI_EXIT.SIGTERM) return "Request was interrupted (SIGTERM)";
+  const clip = (stderr || "").slice(0, 200).trim();
+  return clip ? `exit ${status}: ${clip}` : `exit ${status}`;
+}
+
+// Unified result shape for both callKimi and callKimiStreaming (codex C6).
+// All error paths include status + partialResponse + events (for debug /
+// partial recovery). All success paths include response + sessionId +
+// events + toolEvents + thinkBlocks.
+function errorResult({ status, error, stdout, events, textParts }) {
+  const partialEvents = events ?? (stdout ? parseKimiStdout(stdout).events : []);
+  const partialText = textParts
+    ? textParts.join("")
+    : (stdout ? parseKimiStdout(stdout).assistantText : "");
+  return {
+    ok: false,
+    error,
+    status: status ?? null,
+    partialResponse: partialText || null,
+    events: partialEvents,
+  };
+}
+
+export function callKimi({
+  prompt,
+  model,
+  cwd,
+  timeout = DEFAULT_TIMEOUT_MS,
+  extraArgs = [],
+  resumeSessionId = null,
+}) {
+  // ── Pre-flight (codex C2) ──
+  // Validate requested model against ~/.kimi/config.toml [models.*] BEFORE
+  // spawning kimi. Avoids the "LLM not set" exit-1 path (which creates a
+  // wasted session). Only applies when -m is explicitly provided; default
+  // model is validated by getKimiAuthStatus in Phase 1.
+  if (model) {
+    const configured = readKimiConfiguredModels();
+    if (configured.length > 0 && !configured.includes(model)) {
+      return errorResult({
+        status: KIMI_EXIT.CONFIG_ERROR,
+        error: `Model '${model}' is not configured in ~/.kimi/config.toml. Available: ${configured.join(", ")}`,
+        events: [],
+      });
+    }
+  }
+
+  const useStdinForPrompt = (prompt || "").length >= LARGE_PROMPT_THRESHOLD_BYTES;
+  const args = buildKimiArgs({ prompt, model, useStdinForPrompt, resumeSessionId, extraArgs });
+
+  const result = runCommand(KIMI_BIN, args, {
+    cwd,
+    timeout,
+    input: useStdinForPrompt ? prompt : undefined,
+  });
+
+  if (result.error) {
+    return errorResult({ error: result.error.message, events: [] });
+  }
+  if (result.status !== 0) {
+    return errorResult({
+      status: result.status,
+      error: describeKimiExit(result),
+      stdout: result.stdout,
+    });
+  }
+
+  const { events, assistantText, toolEvents } = parseKimiStdout(result.stdout);
+
+  // ── No-visible-text guard (gemini G1 + codex/gemini v2-reviews A1) ──
+  // If assistant produced no visible text, treat as failure regardless of
+  // event count. This catches two silent-failure modes:
+  //   (a) Exit 0 + 0 events     (stream-json format unknown / uncommon dump)
+  //   (b) Exit 0 + think-only   (reasoning but no surfaced answer — user
+  //                              would see "" if we returned ok)
+  if (!assistantText) {
+    return {
+      ok: false,
+      error: events.length === 0
+        ? "kimi exited 0 but produced no stream-json events"
+        : "kimi produced no visible text (think-only response)",
+      status: KIMI_EXIT.OK,
+      rawStdout: (result.stdout || "").slice(0, 2000),
+      events,
+      thinkBlocks: events
+        .filter((e) => e.role === "assistant")
+        .flatMap((e) => (e.content || []).filter((b) => b && b.type === "think"))
+        .length,
+    };
+  }
+
+  const sessionId =
+    parseSessionIdFromStderr(result.stderr) ||
+    readSessionIdFromKimiJson(cwd || process.cwd());
+
+  // Gemini G4: count think blocks so Claude can surface "Kimi thought for N
+  // blocks" as a quality signal without surfacing the raw reasoning.
+  const thinkBlocks = events
+    .filter((e) => e.role === "assistant")
+    .flatMap((e) => (e.content || []).filter((b) => b && b.type === "think"))
+    .length;
+
+  return {
+    ok: true,
+    response: assistantText,
+    sessionId,
+    events,
+    toolEvents,
+    thinkBlocks,
+  };
+}
+
 // ── Exports for Phase 2+ to consume ────────────────────────
 
 export {
