@@ -2,6 +2,23 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-20 [Claude Opus 4.7 — Phase 2 ask + streaming]
+
+- **status**: done
+- **scope**: plugins/kimi/scripts/lib/kimi.mjs, plugins/kimi/scripts/kimi-companion.mjs, plugins/kimi/commands/ask.md (new), plugins/kimi/skills/kimi-result-handling/SKILL.md, doc/probe/probe-results.json
+- **summary**: /kimi:ask implemented end-to-end with sync, JSON, and (developer-only) streaming modes. Executed Phase 2 v4 plan via subagent-driven-development (8 tasks + 1 follow-up fix).
+  - **Runtime sentinels** (Task 2.1): `LLM_NOT_SET_MARKER`, `KIMI_EXIT` table, `KIMI_STATUS_TIMED_OUT=124` (GNU timeout convention; avoids POSIX wraparound).
+  - **Parsers** (2.1): `parseKimiEventLine` / `extractAssistantText` (keep `text`, drop `think`, skip unknown) / `parseKimiStdout` (multi-line JSONL) / `parseSessionIdFromStderr` / `readSessionIdFromKimiJson`.
+  - **callKimi** (2.2): sync wrapper with model pre-flight, unified `errorResult` helper, empty-response guard (`!assistantText` regardless of event count — catches think-only silent-failure mode), `thinkBlocks` surface.
+  - **callKimiStreaming** (2.3): async `spawn` + StringDecoder("utf8") multi-byte safety, per-event `onEvent` callback, unified timeout contract (status=124). DRY helper `countThinkBlocks` extracted (addresses Task 2.2 code-review minor).
+  - **runAsk** (2.4): --json / --stream / -m / -r flags; rejects `-X=` short-form (codex v3 A3); `KIMI_COMPANION_CALLER=claude` env gate blocks --stream from /kimi:ask; arg-unpack uses `ASK_KNOWN_FLAG` allowlist regex (codex v2 A3: no `startsWith("-")` mis-split); footer always shows session (even "unknown (not captured)" — exposes capture bugs, codex v3 A2); `process.exit(result.status ?? 1)` propagates kimi's original exit code.
+  - **/kimi:ask command** (2.5): verbatim-presentation contract, MUST NOT prepend/append commentary (gemini v4-4), declarative-only error suggestions (MUST NOT end with "?", gemini v4-5).
+  - **kimi-result-handling SKILL** (2.6): concrete rendering patterns for /kimi:ask success, partialResponse, Chinese output, think blocks.
+  - **Empirical fix** (Task 2.7 follow-up): kimi 1.36 rejects `-p ""` ("Prompt cannot be empty") — switched stdin mode to `--input-format text` + no `-p` flag. codex C1 was correct after all; probe-results.json rationale updated.
+- **Exit criteria met**: T2 PASS (sync JSON), T3 PASS (streaming JSONL + summary), T4 PASS (sessionId ↔ kimi.json), invalid-model PASS (pre-flight routes exit=1 with available list), large-prompt PASS (150KB via --input-format text), resume positive PASS, reverse WARN (kimi-cli doesn't validate bogus sid — documented, not a blocker).
+- **Tag**: `phase-2-ask` — cumulative progress 36/85 tasks = 42%.
+- **next**: author `docs/superpowers/plans/YYYY-MM-DD-phase-3-review-retry.md`. Phase 3 opens with Task 3.0 (modularize kimi-result-handling SKILL into `references/<command>-render.md` — G6 addressed) then adds `/kimi:review` with git-diff collection, schema-validated JSON findings, 1-shot parse retry.
+
 ## 2026-04-20 [Claude Sonnet 4.6 — Task 2.7 follow-up: fix stdin path uses --input-format text]
 
 - **status**: done
