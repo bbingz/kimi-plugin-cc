@@ -58,13 +58,24 @@ function resolveWorkspaceRoot(cwd) {
 const USAGE = `Usage: kimi-companion <subcommand> [options]
 
 Subcommands:
-  setup [--json]                       Check kimi CLI availability, auth, and configured models
+  setup [--json] [--enable-review-gate|--disable-review-gate]
+                                       Check kimi CLI availability, auth, and configured models
   ask [--json] [--stream] [-m <model>] [-r <sessionId>] "<prompt>"
                                        Send a one-shot prompt. --stream emits JSONL events as they arrive.
   review [--base <ref>] [--scope <auto|staged|unstaged|working-tree|branch>] [-m <model>] [focus...]
                                        Review current diff. Always emits JSON matching review-output schema.
+  task [--json] [--background|--wait] [--resume-last|--fresh] [-m <model>] "<prompt>"
+                                       Delegate an open-ended task to kimi. Background spawns a detached worker; foreground streams progress.
+  status [job-id] [--all] [--wait] [--json]
+                                       Show background-job status.
+  result [job-id] [--json]             Fetch a completed job's full output.
+  cancel [job-id] [--any-session] [--json]
+                                       Cancel a running background job. Default scope is current
+                                       terminal session; --any-session reaches jobs submitted from
+                                       other terminals (useful when the jobId is forgotten).
+  task-resume-candidate [--json]       Probe for a resumable prior task (used by /kimi:rescue).
 
-(More subcommands arrive in Phase 4+.)`;
+(Internal: _worker / _stream-worker are background re-entry points; do not call directly.)`;
 
 // Detects which installers the user has available for /kimi:setup to suggest.
 function detectInstallers() {
@@ -450,6 +461,125 @@ async function runTask(rawArgs) {
   process.exit(result.ok ? KIMI_EXIT.OK : (result.status ?? 1));
 }
 
+function runJobStatus(rawArgs) {
+  const { options, positionals } = parseArgs(rawArgs, {
+    booleanOptions: ["json", "all", "wait"],
+  });
+  const cwd = process.cwd();
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const jobId = positionals[0];
+
+  if (jobId && options.wait) {
+    const final = waitForJob(workspaceRoot, jobId);
+    process.stdout.write(JSON.stringify(final, null, 2) + "\n");
+    process.exit(final.waitTimedOut ? 1 : 0);
+  }
+
+  if (jobId) {
+    const single = buildSingleJobSnapshot(workspaceRoot, jobId);
+    if (!single) {
+      process.stdout.write(JSON.stringify({ ok: false, error: `Job ${jobId} not found` }, null, 2) + "\n");
+      process.exit(1);
+    }
+    process.stdout.write(JSON.stringify(single, null, 2) + "\n");
+    process.exit(0);
+  }
+
+  const snapshot = buildStatusSnapshot(workspaceRoot, { showAll: options.all });
+  process.stdout.write(JSON.stringify(snapshot, null, 2) + "\n");
+  process.exit(0);
+}
+
+function runJobResult(rawArgs) {
+  const { positionals } = parseArgs(rawArgs, { booleanOptions: ["json"] });
+  const cwd = process.cwd();
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  // Passing no reference already falls back to the most-recent terminal
+  // job (resolveResultJob's documented behavior). Users who forget the
+  // jobId just run `/kimi:result` — the latest is returned (gemini
+  // v1-review G-M1: this is the already-working escape hatch, no new
+  // flag needed).
+  const reference = positionals[0] || null;
+
+  const job = resolveResultJob(workspaceRoot, reference);
+  if (!job) {
+    process.stdout.write(JSON.stringify({
+      ok: false,
+      error: reference ? `No terminal job matches "${reference}"` : "No completed jobs to fetch",
+    }, null, 2) + "\n");
+    process.exit(1);
+  }
+
+  const payload = readStoredJobResult(workspaceRoot, job.id);
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    jobId: job.id,
+    status: job.status,
+    kimiSessionId: job.kimiSessionId || null,
+    result: payload,
+  }, null, 2) + "\n");
+  process.exit(0);
+}
+
+function runJobCancel(rawArgs) {
+  const { options, positionals } = parseArgs(rawArgs, {
+    booleanOptions: ["json", "any-session"],
+  });
+  const cwd = process.cwd();
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const reference = positionals[0] || null;
+
+  // `resolveCancelableJob(workspaceRoot, null)` filters to current-session
+  // cancelable jobs by default (intentional safety — no accidentally
+  // cancelling someone else's job). `--any-session` bypasses that filter
+  // so a user in a new terminal can cancel a job they submitted earlier
+  // (gemini v1-review G-H3 / G-M1). Explicit jobId already matches
+  // across sessions, so this flag is only useful when the user doesn't
+  // remember the id.
+  let job;
+  if (!reference && options["any-session"]) {
+    // Read listJobs directly and pick newest cancelable (queued/running)
+    // without the session filter. Equivalent to gemini's approach when
+    // an explicit id is given.
+    const active = listJobs(workspaceRoot).filter(
+      (j) => j.status === "queued" || j.status === "running"
+    );
+    job = sortJobsNewestFirst(active)[0] || null;
+  } else {
+    job = resolveCancelableJob(workspaceRoot, reference);
+  }
+
+  if (!job) {
+    process.stdout.write(JSON.stringify({
+      ok: false,
+      error: reference
+        ? `No cancellable job matches "${reference}"`
+        : (options["any-session"]
+          ? "No active jobs in any session"
+          : "No active jobs for the current session — pass a jobId or --any-session to reach older terminals"),
+    }, null, 2) + "\n");
+    process.exit(1);
+  }
+
+  const r = cancelJob(workspaceRoot, job.id);
+  process.stdout.write(JSON.stringify({ ok: r.cancelled, ...r }, null, 2) + "\n");
+  process.exit(r.cancelled ? 0 : 1);
+}
+
+function runTaskResumeCandidate(rawArgs) {
+  const _ = parseArgs(rawArgs, { booleanOptions: ["json"] });
+  const cwd = process.cwd();
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+
+  const candidate = resolveResumeCandidate(workspaceRoot);
+  if (!candidate) {
+    process.stdout.write(JSON.stringify({ available: false }, null, 2) + "\n");
+    process.exit(0);
+  }
+  process.stdout.write(JSON.stringify(candidate, null, 2) + "\n");
+  process.exit(0);
+}
+
 // ── Dispatcher ─────────────────────────────────────────────
 
 // Subcommands whose $ARGUMENTS blob should be split into flags/positionals.
@@ -458,13 +588,17 @@ async function runTask(rawArgs) {
 //          KNOWN flag (codex v2-review A3: previous `startsWith("-")` would
 //          mis-split a blob like "-v my prompt" where the leading dash is
 //          part of the prompt). Allowlist known ask flags + their aliases.
-const UNPACK_SAFE_SUBCOMMANDS = new Set(["setup", "ask", "review"]);
+const UNPACK_SAFE_SUBCOMMANDS = new Set([
+  "setup", "ask", "review", "task",
+  "status", "result", "cancel", "task-resume-candidate",
+]);
 
 // Matches a known ask flag token. Long form: --json / --stream / --model /
 // --resume (with or without = attached). Short form: -m / -r (only — no
 // other single-dash form is a valid ask flag).
 const ASK_KNOWN_FLAG = /^(?:--(?:json|stream|model|resume)(?:=.*)?|-[mr])$/;
 const REVIEW_KNOWN_FLAG = /^(?:--(?:json|model|base|scope)(?:=.*)?|-m)$/;
+const TASK_KNOWN_FLAG = /^(?:--(?:json|background|wait|resume-last|fresh|model|cwd|resume-session-id)(?:=.*)?|-m)$/;
 
 function shouldUnpackBlob(sub, rest) {
   if (rest.length !== 1) return false;
@@ -475,7 +609,26 @@ function shouldUnpackBlob(sub, rest) {
   if (sub === "setup") return tokens.every((t) => t.startsWith("-"));
   if (sub === "ask") return ASK_KNOWN_FLAG.test(tokens[0]);
   if (sub === "review") return REVIEW_KNOWN_FLAG.test(tokens[0]) || tokens.every((t) => !t.startsWith("-"));
+  if (sub === "task") return TASK_KNOWN_FLAG.test(tokens[0]) || tokens.every((t) => !t.startsWith("-"));
+  // status/result/cancel/task-resume-candidate: all-flags OR [jobId, ...flags]
+  if (sub === "status" || sub === "result" || sub === "cancel" || sub === "task-resume-candidate") {
+    return true;
+  }
   return false;
+}
+
+// Placeholders for Task 4.4 (dispatchWorker / dispatchStreamWorker).
+// These will be replaced with real implementations in the next task.
+// Present here so the dispatcher switch can reference them without
+// forward-reference issues and so `node --check` passes.
+function dispatchWorker(_rest) {
+  process.stderr.write("not implemented yet (Task 4.4)\n");
+  process.exit(2);
+}
+
+function dispatchStreamWorker(_rest) {
+  process.stderr.write("not implemented yet (Task 4.4)\n");
+  process.exit(2);
 }
 
 async function main() {
@@ -493,6 +646,20 @@ async function main() {
       return runAsk(rest);
     case "review":
       return runReview(rest);
+    case "task":
+      return runTask(rest);
+    case "status":
+      return runJobStatus(rest);
+    case "result":
+      return runJobResult(rest);
+    case "cancel":
+      return runJobCancel(rest);
+    case "task-resume-candidate":
+      return runTaskResumeCandidate(rest);
+    case "_worker":
+      return dispatchWorker(rest);
+    case "_stream-worker":
+      return dispatchStreamWorker(rest);
     case undefined:
     case "--help":
     case "-h":
