@@ -2,6 +2,23 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-20 [Claude Opus 4.7 — Phase 1 skeleton]
+
+- **status**: done
+- **scope**: plugins/kimi/** (new), .claude-plugin/marketplace.json (new), repo root files (.gitignore/README.md/CLAUDE.md)
+- **summary**: Phase 1 skeleton complete across 14 commits. The plugin is structurally complete and CLI-layer verified.
+  - Lib files hand-rewritten from gemini-plugin-cc (P2 principle, no sed/cp): `args.mjs` (c8db8ba), `process.mjs` (dcf3252), `render.mjs` (3a881a6 — stats inline removed; kept function names `renderGeminiResult` etc. per "function names unchanged" rule — flagged as Phase 2 rename candidate), `git.mjs` (e289bf5), `state.mjs` (0022b68 — only 2 literal changes: `kimi-companion` dir, `kj-` job prefix).
+  - `kimi.mjs` (a8f78d3 + 21262ca): TOML top-level key scanner, `[models.*]` section scanner (handles bare + double-quoted + single-quoted keys; strips quotes — real host config has `[models."kimi-code/kimi-for-coding"]`), `getKimiAvailability`, `getKimiAuthStatus` (with model preflight before ping; returns `{loggedIn: null, modelConfigured: false}` when default_model is missing from configured list to distinguish from auth failure), `readKimiDefaultModel`, `readKimiConfiguredModels`, exported constants PING_MAX_STEPS=1 / SESSION_ID_STDERR_REGEX / LARGE_PROMPT_THRESHOLD_BYTES=100000 / PARENT_SESSION_ENV / KIMI_BIN / DEFAULT_TIMEOUT_MS / AUTH_CHECK_TIMEOUT_MS. Constant assertion runs in smoke test and verifies regex extracts UUID from a hardcoded probe-01 stderr sample.
+  - `kimi-companion.mjs` (3e355ca): dispatcher with `setup` subcommand and guarded arg-unpack heuristic (`shouldUnpackBlob` requires sub=="setup" AND every token starts with "-", so Phase 2 positional prompts won't get split). JSON and human-format paths both validated.
+  - `commands/setup.md`: dynamic AskUserQuestion option filtering; 0-installer text fallback; official install URL `https://cdn.kimi.com/binaries/kimi-cli/install.sh` (codex-verified; previous plans used wrong moonshot.cn URL).
+  - 3 skills: `kimi-cli-runtime/SKILL.md` (all literals from probe-results.json v3 — no placeholders), `kimi-prompting/SKILL.md` skeleton + `references/.gitkeep`, `kimi-result-handling/SKILL.md` early draft (content aggregation rules + think-block drop + stats-unavailable guidance).
+  - **T1 PASS** (setup --json returns installed=true, version populated, authenticated=true, model=kimi-code/kimi-for-coding, configured_models=[...], installers={shellInstaller:true, uv:true, pipx:false}).
+  - **T8 PASS** (KIMI_CLI_BIN=/nonexistent → installed=false, version=null, authenticated=false, installers still populated).
+  - **Formatter text path PASS** (three-line human-readable output verified: `installed: yes (kimi, version 1.36.0)` / `authenticated: yes` / `default model: kimi-code/kimi-for-coding`).
+  - **`claude plugins validate ./plugins/kimi` PASS** (manifest clean).
+  - **T1.16 Steps 2-3 PENDING MANUAL**: `claude plugins install` + live `/kimi:setup` inside a Claude Code session needs operator action. Tag represents code-state readiness, not live-integration. If live test later fails, add a fix commit and retag.
+- **next**: author `docs/superpowers/plans/YYYY-MM-DD-phase-2-ask-streaming.md`. Phase 2 implements `callKimi` + `callKimiStreaming` with multi-line JSONL parsing and content-block text aggregation per kimi-cli-runtime contract. Also: consider renaming `renderGeminiResult` → `renderKimiResult` in render.mjs as a Phase 2 task (tech debt from T1.5).
+
 ## 2026-04-20 [Claude Opus 4.7 — Phase 1 plan v2 after 3-way review]
 
 - **status**: done
