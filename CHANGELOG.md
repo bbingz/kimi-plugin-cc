@@ -2,6 +2,23 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-20 [Claude Opus 4.7 — Phase 3 post-review polish]
+
+- **status**: done
+- **scope**: plugins/kimi/scripts/lib/{git.mjs, kimi.mjs, render.mjs}, plugins/kimi/scripts/kimi-companion.mjs, plugins/kimi/commands/review.md
+- **summary**: Second impl-layer 3-way review (codex + gemini, parallel) after `phase-3-review` tag. Codex: 0C/1H/1M/1L. Gemini: 0C/3H/3M/3L. All High findings integrated into two follow-up commits:
+  - **Commit (plumbing)** — codex C-H1 + C-L1 + gemini G-H1:
+    - runReview now propagates `result.transportError?.status ?? 1` on failure, restoring Phase 2's SIGINT=130 / SIGTERM=143 signal propagation that Phase 3 regressed.
+    - `renderReviewResult` in render.mjs deleted as dead code (/kimi:review is JSON-only end-to-end; the prose renderer was never called).
+    - `isEmptyContext(context)` extracted into git.mjs — owns the coupling to `formatSection`'s `(none)` sentinel shape locally; kimi-companion.mjs no longer grep-scans the skeleton.
+  - **Commit (render signals)** — gemini G-H2 + G-H3 + G-M2 + G-M3:
+    - `truncation_notice` + `retry_notice` fields added to the review JSON payload. Prefilled by `TRUNCATION_NOTICE`/`RETRY_NOTICE` constants in kimi.mjs when `truncated` / `retry_used` respectively. review.md renders VERBATIM instead of relying on Claude's rendering discipline on long outputs (where rules at step 1 or step 6 empirically get buried or dropped).
+    - review.md verdict bullet now explicitly documents the `no_changes` divergence (companion-only; kimi returns approve or needs-attention).
+    - `no_changes` fast-path in runReview emits the full 10-field shape for consumer parity.
+    - Phase-5 TODO comment added next to callKimiReview marking the review pipeline (buildReviewPrompt + extractReviewJson + validateReviewOutput + reviewError + callKimiReview) as a clean extraction point for a future shared `scripts/lib/review.mjs` module (sibling-plugin reuse).
+- **Deferred**: codex C-M1 (extractor walk-all-top-level-objects; rare scenario + retry covers it), gemini G-M1 (finding line-number validation against diff hunks; Phase 4/5 tracking), gemini G-L1/L2/L3 (informational).
+- **next**: author docs/superpowers/plans/YYYY-MM-DD-phase-4-background-agent.md. Phase 4 adds `/kimi:rescue` + port job-control.mjs + `/kimi:status` + `/kimi:result` + `/kimi:cancel` + `kimi-agent` subagent + SessionEnd + Stop hooks.
+
 ## 2026-04-20 [Claude Opus 4.7 — Phase 3 /kimi:review + 1-shot retry]
 
 - **status**: done
