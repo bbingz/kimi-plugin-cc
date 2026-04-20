@@ -82,9 +82,101 @@ export function getKimiAvailability(cwd) {
   return binaryAvailable(KIMI_BIN, ["-V"], { cwd });
 }
 
-// ── Placeholder for Task 1.9 ───────────────────────────────
-export function getKimiAuthStatus(_cwd) {
-  throw new Error("getKimiAuthStatus not implemented yet (Task 1.9)");
+// ── Authentication check (spec §3.7) ───────────────────────
+
+function credentialsDirNonEmpty() {
+  try {
+    const dir = path.join(os.homedir(), ".kimi", "credentials");
+    return fs.readdirSync(dir).some((e) => !e.startsWith("."));
+  } catch {
+    return false;
+  }
+}
+
+// Scan the JSONL stdout of a --print --output-format stream-json run
+// for at least one assistant event with a non-empty text block. See
+// doc/probe/probe-results.json v3 stream_json section for field semantics
+// (content is a block list; text lives in blocks where type=="text").
+function hasAssistantTextBlock(stdout) {
+  if (!stdout) return false;
+  for (const raw of stdout.split("\n")) {
+    const trimmed = raw.trim();
+    if (!trimmed.startsWith("{")) continue;
+    let event;
+    try {
+      event = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (event.role !== "assistant") continue;
+    const blocks = event.content || [];
+    const hasText = blocks.some(
+      (b) =>
+        b &&
+        b.type === "text" &&
+        typeof b.text === "string" &&
+        b.text.trim().length > 0
+    );
+    if (hasText) return true;
+  }
+  return false;
+}
+
+export function getKimiAuthStatus(cwd) {
+  if (!credentialsDirNonEmpty()) {
+    return { loggedIn: false, detail: "no credentials in ~/.kimi/credentials" };
+  }
+
+  // Model preflight (codex review C3): validate default_model is in
+  // [models.*] before spending a live session. Distinguishes
+  // "auth broken" from "model config broken".
+  const defaultModel = readKimiDefaultModel();
+  const configured = readKimiConfiguredModels();
+  if (configured.length === 0) {
+    return {
+      loggedIn: null,
+      detail: "no [models.*] sections in ~/.kimi/config.toml",
+      modelConfigured: false,
+    };
+  }
+  if (defaultModel && !configured.includes(defaultModel)) {
+    return {
+      loggedIn: null,
+      detail: `default model '${defaultModel}' is not declared in ~/.kimi/config.toml [models.*]`,
+      model: defaultModel,
+      modelConfigured: false,
+    };
+  }
+
+  const result = runCommand(
+    KIMI_BIN,
+    [
+      "-p", "ping",
+      "--print",
+      "--output-format", "stream-json",
+      "--max-steps-per-turn", String(PING_MAX_STEPS),
+    ],
+    { cwd, timeout: AUTH_CHECK_TIMEOUT_MS }
+  );
+
+  if (result.error) {
+    return { loggedIn: false, detail: result.error.message };
+  }
+  if (result.status !== 0) {
+    const stderrClip = (result.stderr || "").slice(0, 200).trim();
+    return { loggedIn: false, detail: stderrClip || `exit ${result.status}` };
+  }
+
+  if (!hasAssistantTextBlock(result.stdout)) {
+    return { loggedIn: false, detail: "ping exited 0 but no assistant text block observed" };
+  }
+
+  return {
+    loggedIn: true,
+    detail: "authenticated",
+    model: defaultModel || "unknown",
+    modelConfigured: true,
+  };
 }
 
 // ── Exports for Phase 2+ to consume ────────────────────────
