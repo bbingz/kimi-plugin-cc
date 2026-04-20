@@ -144,12 +144,22 @@ async function runAsk(rawArgs) {
         thinkBlocks: result.thinkBlocks ?? null,
       },
     };
+    if (result.ok && !result.sessionId) {
+      process.stderr.write(
+        "Warning: session_id could not be captured. --resume will not work for this call.\n"
+      );
+    }
     process.stdout.write(JSON.stringify(summary) + "\n");
     process.exit(result.ok ? KIMI_EXIT.OK : (result.status ?? 1));
   }
 
   const result = callKimi(callArgs);
   if (options.json) {
+    if (result.ok && !result.sessionId) {
+      process.stderr.write(
+        "Warning: session_id could not be captured. --resume will not work for this call.\n"
+      );
+    }
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
   } else {
     if (!result.ok) {

@@ -409,13 +409,13 @@ export function callKimi({
 
   const { events, assistantText, toolEvents } = parseKimiStdout(result.stdout);
 
-  // ── No-visible-text guard (gemini G1 + codex/gemini v2-reviews A1) ──
-  // If assistant produced no visible text, treat as failure regardless of
-  // event count. This catches two silent-failure modes:
+  // ── No-visible-text guard (gemini G1 + codex Phase-2-review M3 trim) ──
+  // If assistant produced no visible text OR only whitespace, treat as
+  // failure regardless of event count. Catches three silent-failure modes:
   //   (a) Exit 0 + 0 events     (stream-json format unknown / uncommon dump)
-  //   (b) Exit 0 + think-only   (reasoning but no surfaced answer — user
-  //                              would see "" if we returned ok)
-  if (!assistantText) {
+  //   (b) Exit 0 + think-only   (reasoning but no surfaced answer)
+  //   (c) Exit 0 + whitespace   (e.g. only "   \n" — visually empty to user)
+  if (!assistantText.trim()) {
     return {
       ok: false,
       error: events.length === 0
@@ -564,10 +564,14 @@ export function callKimiStreaming({
         return;
       }
 
-      // No-visible-text guard mirrored in streaming path (same fix as sync).
-      // Catches both 0-events and think-only cases.
+      // ── No-visible-text guard (gemini G1 + codex Phase-2-review M3 trim) ──
+      // If assistant produced no visible text OR only whitespace, treat as
+      // failure regardless of event count. Catches three silent-failure modes:
+      //   (a) Exit 0 + 0 events     (stream-json format unknown / uncommon dump)
+      //   (b) Exit 0 + think-only   (reasoning but no surfaced answer)
+      //   (c) Exit 0 + whitespace   (e.g. only "   \n" — visually empty to user)
       const streamedText = textParts.join("");
-      if (!streamedText) {
+      if (!streamedText.trim()) {
         resolve({
           ok: false,
           error: events.length === 0

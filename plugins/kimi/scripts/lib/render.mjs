@@ -48,7 +48,7 @@ export function renderSetupReport(report) {
 /**
  * Render ask/review result as human-readable markdown.
  */
-export function renderGeminiResult(result) {
+export function renderKimiResult(result) {
   if (!result.ok) {
     return `**Error:** ${result.error}\n`;
   }
@@ -71,7 +71,7 @@ export function renderReviewResult(result, { truncated = false } = {}) {
     );
   }
 
-  lines.push(renderGeminiResult(result));
+  lines.push(renderKimiResult(result));
   return lines.join("\n");
 }
 
