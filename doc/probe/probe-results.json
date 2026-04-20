@@ -1,37 +1,51 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "probed_at": "2026-04-20T11:32:12.735117+08:00",
+  "revised_at": "2026-04-20T14:00:00+08:00",
   "kimi_version": "1.36.0",
   "platform": "darwin",
+  "revision_note": "v3 integrates 3-way review findings: codex source-read corrections (kimi_cli/* at ~/.local/share/uv/tools/kimi-cli/lib/python3.13/site-packages/) and probe 06 fresh-path upsert confirmation.",
 
   "stream_json": {
-    "format_actual": "per-turn JSONL — one JSON object per completed agent turn, NOT per-token streaming",
+    "format_actual": "JSONL — one JSON line per printed message. A single kimi run may emit MULTIPLE lines when tool use occurs (each tool_result is a separate role='tool' event; each assistant turn is a separate role='assistant' event). Not per-token streaming; granularity is per printed message.",
+    "multi_line_per_run": true,
     "flat_event_shape": false,
-    "top_level_keys": ["role", "content"],
+    "top_level_keys_observed": ["role", "content"],
     "assistant_role_value": "assistant",
+    "tool_role_value": "tool",
+    "tool_result_is_separate_event": true,
+
     "content_is_block_list": true,
     "content_block_key": "content",
     "content_block_types_seen": ["think", "text"],
+    "content_block_types_defined_in_source": ["text", "think", "image_url", "audio_url", "video_url"],
+    "content_block_types_unknown_handling": "Phase 1 should skip unknown types when concatenating assistant text; preserve raw block for debugging but do not error.",
     "text_block_type_value": "text",
     "text_block_text_key": "text",
     "think_block_type_value": "think",
-    "stats_event_present": false,
+    "tool_calls_location": "Assistant event may carry a tool_calls field outside content[] (source: kosong/message.py); Phase 1 does not need to render these for /kimi:ask but must not drop them silently for /kimi:rescue.",
+
+    "stats_event_present_in_stdout": false,
+    "stats_exists_internally_but_dropped_by_json_printer": "kimi_cli/wire/types.py defines StatusUpdate(token_usage, context_tokens) but kimi_cli/ui/print/visualize.py JsonPrinter drops it via case _: pass. No flag combination surfaces this in --output-format stream-json.",
     "stats_keys": null,
 
     "session_id_in_stdout": false,
     "session_id_in_stderr": true,
-    "stderr_session_pattern": "kimi -r ([0-9a-f-]{36})"
+    "stderr_session_pattern": "kimi -r ([0-9a-f-]{36})",
+    "stderr_session_emission_path": "kimi_cli/cli/__init__.py::_print_resume_hint via _emit_fatal_error writes directly to sys.stderr; NOT gated by --quiet flag. Only at-risk if the *caller* discards stderr (e.g. 2>/dev/null) — emission itself is reliable."
   },
 
   "work_dirs": {
     "file_path": "~/.kimi/kimi.json",
     "updated_in_print_mode": true,
-    "new_entry_for_fresh_path": false,
+    "new_entry_for_fresh_path": true,
+    "new_entry_evidence": "Probe 06: /tmp/kimi-fresh-<pid> had no prior entry; after kimi call, a new work_dirs entry with path and last_session_id was appended. Source: kimi_cli/session.py::Session.create() calls new_work_dir_meta() + save_metadata() when get_work_dir_meta() misses.",
     "last_session_id_matches_stderr": true,
     "last_session_id_updated_synchronously": true,
     "hash_algorithm": "md5",
     "session_dir_template": "~/.kimi/sessions/<md5(work_dir_path)>/<session_uuid>/",
-    "path_storage_format": "verbatim"
+    "path_storage_format": "verbatim-absolute-normalized",
+    "path_storage_details": "Source code calls canonical() which normalizes (absolute + dot-segment removal) but does NOT resolve symlinks. Probe 06 confirmed: input /tmp/kimi-fresh-32940 was stored verbatim; md5 of this string matches the session dir. md5 of realpath /private/tmp/... does NOT match. Phase 1 implication: always pass -w with the same form used for comparison (recommend fs.realpathSync(cwd) on both sides)."
   },
 
   "large_prompts": {
@@ -42,28 +56,64 @@
     "inline_p_works_at_200k_macos": true,
     "recommended_strategy": "stdin",
     "threshold_bytes": 100000,
-    "rationale": "stdin avoids ARG_MAX across platforms; macOS handles up to 200k inline but Linux often doesn't"
+    "rationale": "stdin avoids ARG_MAX across platforms; macOS handles up to 200k inline but Linux often has lower limits."
   },
 
   "auth_ping": {
     "recommended_max_steps_per_turn": 1,
     "trials": { "n1": "3/3", "n2": "3/3", "n3": "3/3" },
-    "recommended_timeout_ms": 30000
+    "recommended_timeout_ms": 30000,
+    "caveat": "Ping with invalid model will create a wasted session (LLMNotSet path). Phase 1 should pre-validate model name against ~/.kimi/config.toml models list before calling --print."
   },
 
   "failure_modes": {
-    "sigterm_mid_stream": { "exit_code": 143, "stdout_state": "empty", "stderr_format": "empty", "partial_session_created": false, "recovery": "no partial parse possible; retry from scratch" },
-    "invalid_model": { "exit_code": 1, "stdout_state": "text", "stdout_marker": "LLM not set", "stderr_format": "text", "stderr_has_resume_hint": true, "partial_session_created": true, "recovery": "surface 'Model configuration failed'; require user fix before retry" },
-    "bad_cwd": { "exit_code": 2, "stdout_state": "empty", "stderr_format": "text", "stderr_pattern": "Invalid value for '--work-dir'", "partial_session_created": false, "recovery": "surface fs error; user must create/correct path" }
+    "sigterm_mid_stream": {
+      "exit_code": 143,
+      "stdout_state": "empty or partial, depending on whether LLM had emitted anything",
+      "stderr_format": "empty",
+      "partial_session_created": false,
+      "buffering_truth": "kimi itself uses flush=True on every print (source: kimi_cli/ui/print/visualize.py). Empty stdout on SIGTERM means the LLM had not yet produced any content, NOT that kimi was buffering. SIGKILL terminates identically (no SIGTERM handler installed per kimi_cli/utils/signals.py).",
+      "recovery": "Treat as signal-terminated; no partial parse. Retry from scratch is safe."
+    },
+    "invalid_model": {
+      "exit_code": 1,
+      "stdout_state": "text",
+      "stdout_marker": "LLM not set",
+      "stderr_format": "text",
+      "stderr_has_resume_hint": true,
+      "partial_session_created": true,
+      "internal_path": "kimi_cli/app.py::create_llm() returns None when model name not found in config; kimi_cli/llm.py raises LLMNotSet; ui/print writes 'LLM not set' to stdout; session metadata is already saved (wasted session).",
+      "recovery": "Phase 1 must pre-validate model against ~/.kimi/config.toml's [models.*] table before invocation. Surface clear error 'Model <X> not configured'. Do NOT use the wasted session id."
+    },
+    "bad_cwd": {
+      "exit_code": 2,
+      "stdout_state": "empty",
+      "stderr_format": "text (Click CLI error box with Unicode borders)",
+      "stderr_pattern": "Invalid value for '--work-dir'",
+      "partial_session_created": false,
+      "recovery": "Surface fs error; ask user to create/correct path."
+    }
+  },
+
+  "command_ux_exit_code_map": {
+    "0": "success — parse stdout JSONL events",
+    "1": "config error (likely 'LLM not set') — check stdout first line; surface as model-config error",
+    "2": "CLI usage error (bad -w, bad flag) — show stderr Click error box content",
+    "130": "SIGINT (user pressed Ctrl-C)",
+    "143": "SIGTERM (external kill) — treat as cancellation"
   },
 
   "implications_for_phase_1": [
-    "callKimi must parse stderr for session id — stdout JSON does not carry it",
-    "Assistant text extraction: iterate event.content[], filter type=='text', concat .text fields",
-    "Think-type blocks may be surfaced as reasoning channel or ignored; prompt designer's choice",
-    "No per-token streaming UX possible; emit events as they arrive (1 per turn)",
-    "Large prompts (>100KB) must use stdin pipe with -p \"\"",
-    "Secondary session-id fallback via kimi.json.work_dirs[cwd].last_session_id is viable; use as backup when stderr parse fails",
-    "Auth check uses --max-steps-per-turn 1 for minimum cost"
+    "callKimi parses stderr for session id — stdout JSON does not carry it; stderr emission is unconditional (not gated by --quiet), so only at risk if caller discards stderr.",
+    "Stream parser must handle MULTIPLE JSONL lines per run; do not assume single-line completion (tool_result and multi-turn cases produce multiple lines).",
+    "Assistant text extraction: iterate event.content[] where event.role=='assistant', filter block.type=='text', concat block.text. Skip unknown block types without error.",
+    "Think-type blocks: default policy is DROP (do not surface to user). Exposing them is a UX choice for kimi-result-handling skill to decide; spec §3.3 content_aggregation section codifies this.",
+    "No per-token streaming UX possible. Use a spinner during wait; render each completed message block as it arrives (paragraph-level increments for multi-line runs).",
+    "Large prompts (>100KB): pipe via stdin with -p \"\".",
+    "Secondary session-id fallback via kimi.json.work_dirs[cwd].last_session_id is viable; use when stderr is unavailable. Path comparison must use the SAME form on both sides (recommend realpath(cwd) consistently).",
+    "Fresh-path invocation is safe: kimi upserts work_dirs entries automatically on first call; no pre-flight mkdir needed.",
+    "Auth check uses --max-steps-per-turn 1 and pre-validates model name to avoid wasted sessions.",
+    "v0.1 cannot expose token/context stats — JsonPrinter drops StatusUpdate events. render.mjs stats path must be null-safe or omitted.",
+    "SIGKILL terminates kimi identically to SIGTERM (no graceful handler). Use SIGTERM for cancellations."
   ]
 }

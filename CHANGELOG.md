@@ -2,9 +2,30 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
-## 2026-04-20 [Claude Opus 4.7 via Haiku subagents]
+## 2026-04-20 [Claude Opus 4.7 — Phase 0 remediation after 3-way review]
 
 - **status**: done
+- **scope**: doc/probe/probe-results.json (v3), doc/probe/06-fresh-path.md (new), docs/superpowers/specs/2026-04-20-kimi-plugin-cc-design.md (§3.3/§3.4/§3.5/§4.2/§6.2)
+- **summary**: Integrated 13 findings from codex + gemini 3-way review of Phase 0 probes.
+  **Codex source-read corrections** (read kimi-cli at ~/.local/share/uv/tools/kimi-cli/lib/python3.13/site-packages/):
+  - [Critical Q2] stream-json is **per-message**, not per-turn; single kimi run can emit multiple JSONL lines when tool use occurs (tool_result is a separate role='tool' event).
+  - [High Q3] SIGTERM empty-stdout is because LLM hadn't produced content, not kimi buffering; `flush=True` is everywhere; no SIGTERM handler so SIGKILL is safe.
+  - [Medium Q4] Session.create() does upsert new work_dirs entries on fresh paths (source: kimi_cli/session.py). probe-results.json changed new_entry_for_fresh_path: false → true.
+  - [Medium Q5] stderr resume hint writes directly to sys.stderr, unaffected by --quiet — only at risk if CALLER discards stderr.
+  - [High Q6] Invalid model (exit 1, "LLM not set") creates a wasted session; Phase 1 must pre-validate model name against ~/.kimi/config.toml [models.*].
+  - [Medium Q7] stats events exist internally (StatusUpdate) but JsonPrinter drops them — confirmed unavailable in v0.1.
+  **Empirical probe P0.8 (fresh-path, added after review)**: confirmed upsert behavior live; confirmed path storage is verbatim (md5 of input string matches session dir; md5 of realpath does NOT). Codex's "canonical()" read means normalize but NOT symlink-resolve. Phase 1 must use fs.realpathSync(cwd) consistently on both sides of work_dirs comparison.
+  **Gemini strategic adjustments**:
+  - [P1] spec §3.3 rewritten: content aggregation rules (only type=="text" blocks, default drop think blocks, skip unknown types without erroring), session_id from stderr explicit, stats section deleted (v0.1 can't), UX expectation set to paragraph-level increments (not per-token).
+  - [P1] spec new §3.5: CLI exit code → command UX mapping table (0/1/2/130/143/other).
+  - [P1] spec §4.2 /kimi:setup: model preflight from config.toml added.
+  - [P1] spec §6.2 lessons.md: new section H "API 行为契约陷阱" — 10-item checklist of systematic traps that recur across provider CLIs (stream granularity, structured-field location, session_id channel, stats reachability, path storage, SIGTERM truth, invalid-model behavior, tool_result event shape, auth-probe cost, upsert behavior).
+  - § 3 subsection renumbering: old §3.5 → §3.6, §3.6 → §3.7, §3.7 → §3.8, §3.8 → §3.9.
+- **next**: tag phase-0-final; then author docs/superpowers/plans/2026-04-20-phase-1-skeleton.md using probe-results.json v3 as literal-value source.
+
+## 2026-04-20 [Claude Opus 4.7 via Haiku subagents]
+
+- **status**: superseded-by-revision
 - **scope**: doc/probe/
 - **summary**: Phase 0 probes complete. 6 probe docs + probe-results.json (schema v2) committed across 7 commits (621c7ca..03f2937). All 5 runtime unknowns resolved:
   - **stream-json is per-turn JSONL** (one JSON object per completed agent turn, not per-token); assistant text lives in `content[]` blocks where `type=="text"`, field `.text`.
