@@ -14,6 +14,37 @@ const PING_MAX_STEPS = 1;
 const SESSION_ID_STDERR_REGEX = /kimi -r ([0-9a-f-]{36})/;
 const LARGE_PROMPT_THRESHOLD_BYTES = 100_000;
 
+// ── Runtime sentinels (kimi-cli source-derived markers) ────
+// Per codex source-read. If kimi-cli updates, only this block changes.
+
+// Exit 1 body contains this marker when the configured model name resolves
+// to an empty provider (kimi_cli/app.py::create_llm returns None →
+// kimi_cli/llm.py raises LLMNotSet → print(str(e)) writes this to stdout).
+// Prefer pre-flight validation (readKimiConfiguredModels) over this marker.
+export const LLM_NOT_SET_MARKER = "LLM not set";
+
+// Exit code → semantic tag. See kimi-cli-runtime SKILL.md for user-facing messages.
+export const KIMI_EXIT = {
+  OK: 0,
+  CONFIG_ERROR: 1,     // LLM_NOT_SET_MARKER path
+  USAGE_ERROR: 2,      // Click error box
+  SIGINT: 130,
+  SIGTERM: 143,
+};
+
+// Synthetic status for local timeout (we SIGTERM the child). GNU `timeout(1)`
+// uses 124 as the "exceeded time limit" convention; POSIX exit codes are
+// 0-255 unsigned (gemini review v2 #4: -1 would wrap to 255 and collide with
+// real signal-induced exits — avoid). 124 fits in [0,255] and is unused by
+// kimi (probe 05 observed only 0/1/2/130/143).
+//
+// Defensive note (gemini v3-review A5): if a future kimi-cli release ever
+// returns 124 for its own reasons (unlikely — the Click / Python runtime
+// doesn't naturally use 124), our describeKimiExit will mistake a real
+// kimi exit for a local timeout. Monitor: add a probe to Phase 0 test
+// sweep when upgrading kimi-cli major versions.
+export const KIMI_STATUS_TIMED_OUT = 124;
+
 // ── TOML top-level key scanner (spec §3.6) ─────────────────
 
 export function readTomlTopLevelKey(text, key) {
@@ -177,6 +208,76 @@ export function getKimiAuthStatus(cwd) {
     model: defaultModel || "unknown",
     modelConfigured: true,
   };
+}
+
+// ── Stream-json event parsing (spec §3.3.2) ────────────────
+
+// Parse a single JSONL line to an event. Returns null for blank/non-JSON.
+// Errors propagate back to caller as null so they can decide on partial recovery.
+export function parseKimiEventLine(raw) {
+  const trimmed = (raw || "").trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+// Aggregate assistant text from ONE event. Follows kimi-cli-runtime contract:
+// keep type==="text" blocks, drop "think", skip unknown. Empty for non-assistant.
+export function extractAssistantText(event) {
+  if (!event || event.role !== "assistant") return "";
+  const blocks = event.content || [];
+  return blocks
+    .filter((b) => b && b.type === "text" && typeof b.text === "string")
+    .map((b) => b.text)
+    .join("");
+}
+
+// Parse a multi-line stdout buffer into { events, assistantText, toolEvents }.
+// Multi-line support is required (probe 01/codex Q2: single run may emit
+// several JSONL lines when tool use is present).
+export function parseKimiStdout(stdout) {
+  const events = [];
+  const toolEvents = [];
+  const textParts = [];
+  for (const raw of (stdout || "").split("\n")) {
+    const ev = parseKimiEventLine(raw);
+    if (!ev) continue;
+    events.push(ev);
+    if (ev.role === "assistant") {
+      const t = extractAssistantText(ev);
+      if (t) textParts.push(t);
+    } else if (ev.role === "tool") {
+      toolEvents.push(ev);
+    }
+  }
+  return { events, assistantText: textParts.join(""), toolEvents };
+}
+
+// ── Session id extraction (spec §3.4) ──────────────────────
+
+// Primary: stderr emits "To resume this session: kimi -r <uuid>" (spec §3.3.3).
+export function parseSessionIdFromStderr(stderr) {
+  if (!stderr) return null;
+  const m = stderr.match(SESSION_ID_STDERR_REGEX);
+  return m ? m[1] : null;
+}
+
+// Secondary: ~/.kimi/kimi.json.work_dirs[].last_session_id matched by
+// verbatim path. Caller must pass the SAME cwd string that was used for -w
+// to make the comparison deterministic (§3.4 — use fs.realpathSync on both
+// sides OR the unresolved value on both sides).
+export function readSessionIdFromKimiJson(workDirPath) {
+  try {
+    const file = path.join(os.homedir(), ".kimi", "kimi.json");
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    const wd = (data.work_dirs || []).find((w) => w && w.path === workDirPath);
+    return wd?.last_session_id || null;
+  } catch {
+    return null;
+  }
 }
 
 // ── Exports for Phase 2+ to consume ────────────────────────
