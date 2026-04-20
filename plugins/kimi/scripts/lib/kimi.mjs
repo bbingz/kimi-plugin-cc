@@ -16,6 +16,11 @@ const PING_MAX_STEPS = 1;
 const SESSION_ID_STDERR_REGEX = /kimi -r ([0-9a-f-]{36})/;
 const LARGE_PROMPT_THRESHOLD_BYTES = 100_000;
 
+// Diff budget for /kimi:review (spec §4.2; probe 03 stdin headroom is ~200k,
+// but leave margin for schema block + summary + focus line in the prompt).
+// Reviews above this get truncated with a visible warning.
+export const MAX_REVIEW_DIFF_BYTES = 150_000;
+
 // ── Runtime sentinels (kimi-cli source-derived markers) ────
 // Per codex source-read. If kimi-cli updates, only this block changes.
 
@@ -603,6 +608,319 @@ export function callKimiStreaming({
       resolve(errorResult({ error: err.message, events, textParts }));
     });
   });
+}
+
+// ── Review prompt (spec §4.2; strong JSON constraint per kimi behavior) ──
+//
+// Load the schema from plugins/kimi/schemas/review-output.schema.json at call
+// time (not module load) so schema edits during development don't require a
+// companion restart. Caller passes { context, focus, schemaPath }.
+export function buildReviewPrompt({ context, focus, schemaPath, retryHint = null }) {
+  const schema = fs.readFileSync(schemaPath, "utf8").trim();
+  // Focus wording (gemini v1-review G-M2): "Focus area: X" was ambiguous
+  // between weight-toward vs limit-to. "Pay particular attention" clarifies
+  // it's a weight cue while preserving room to flag out-of-focus criticals.
+  const focusLine = focus
+    ? `\nPay particular attention to: ${focus}. You may still report critical issues outside this area.\n`
+    : "";
+  const retryBlock = retryHint
+    ? `\n\n[IMPORTANT] Your previous response failed JSON parsing or schema validation. The error was: ${retryHint}\nReturn ONLY the JSON object — no prose, no markdown fence, no commentary before or after. Nothing but the JSON. Use the EXACT English severity strings (critical/high/medium/low) — do NOT translate them.\n`
+    : "";
+
+  // Kimi constraint wording is tighter than gemini's (spec §4.2): kimi
+  // empirically adds "好的，这是 JSON：" prose preambles and sometimes wraps
+  // output in markdown fences despite explicit instructions. Our prompt tells
+  // it exactly what NOT to do in addition to what to do.
+  return `You are reviewing code changes. Return your review as a single JSON object matching this schema:
+
+\`\`\`json
+${schema}
+\`\`\`
+
+STRICT OUTPUT RULES (kimi-plugin-cc §4.2):
+- Return ONLY the JSON object.
+- No markdown code fence around it (no \`\`\`json ... \`\`\`).
+- No prose before (no "好的" / "Here is" / "This review").
+- No prose after (no "让我知道" / "Let me know").
+- \`severity\` MUST be one of the EXACT English strings: critical, high, medium, low. Do NOT translate these to Chinese (gemini v1-review G-M1; kimi priors may produce 严重/高/中/低 — those FAIL schema validation).
+- \`verdict\` MUST be: approve or needs-attention (never "no_changes" — that's a companion-side fast path for empty diffs).
+- For each finding you DO include, fill ALL required fields: severity, title, body, file, line_start, line_end, confidence, recommendation. Empty findings array is fine if the diff is clean; partially-filled findings are rejected.
+- Do NOT fabricate line numbers. If you are unsure of exact lines, omit the entire finding.${retryBlock}
+
+${context.summary}${focusLine}
+
+${context.content}`;
+}
+
+// Locate and parse the JSON object in kimi's response. Handles 3 observed
+// dirty modes: (a) bare JSON, (b) ```json ... ``` fence, (c) prose + JSON.
+// Returns { ok: true, data } or { ok: false, error, parseError, rawText }.
+export function extractReviewJson(text) {
+  if (typeof text !== "string" || !text.trim()) {
+    return { ok: false, error: "empty response", parseError: null, rawText: text };
+  }
+
+  // Strip markdown fences first (mode b).
+  let candidate = text.trim();
+  const fenceMatch = candidate.match(/^\`\`\`(?:json)?\s*\n([\s\S]*?)\n\`\`\`\s*$/);
+  if (fenceMatch) candidate = fenceMatch[1].trim();
+
+  // Locate first '{' (mode c prose preamble).
+  const firstBrace = candidate.indexOf("{");
+  if (firstBrace === -1) {
+    return { ok: false, error: "no JSON object found in response", parseError: null, rawText: text };
+  }
+  candidate = candidate.slice(firstBrace);
+
+  // Walk forward to matching brace (ignore string contents). Prevents failure
+  // when kimi appends trailing prose after valid JSON.
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let end = -1;
+  for (let i = 0; i < candidate.length; i++) {
+    const c = candidate[i];
+    if (escape) { escape = false; continue; }
+    if (c === "\\") { escape = true; continue; }
+    if (c === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (c === "{") depth++;
+    else if (c === "}") { depth--; if (depth === 0) { end = i; break; } }
+  }
+  if (end === -1) {
+    return { ok: false, error: "unterminated JSON object", parseError: null, rawText: text };
+  }
+  const jsonStr = candidate.slice(0, end + 1);
+
+  // Reject trailing JSON/structured content (codex v1-review C-M1): if kimi
+  // emits `{...}{...}` or `{...}[...]`, our walker would take the first object
+  // and ignore the rest. Treat that as "malformed — retry" so the second
+  // attempt has a chance at producing a single object.
+  const trailing = candidate.slice(end + 1).trim();
+  if (trailing.startsWith("{") || trailing.startsWith("[")) {
+    return { ok: false, error: "response contains multiple top-level JSON values", parseError: null, rawText: text };
+  }
+
+  try {
+    const data = JSON.parse(jsonStr);
+    return { ok: true, data };
+  } catch (e) {
+    return { ok: false, error: "JSON parse failed", parseError: e.message, rawText: text };
+  }
+}
+
+// Minimal hand-written validator for review-output.schema.json.
+// Enforces the 4 contract rules that T5 + prompt cover:
+//   (1) required top-level keys
+//   (2) verdict enum (approve | needs-attention) — NOT "no_changes";
+//       that's a companion-side fast-path shape, not kimi output
+//   (3) per-finding required fields (codex v1-review C-H1 fix)
+//   (4) severity enum + numeric bounds on confidence/line_start/line_end
+// Returns { ok: true } or { ok: false, errors: [string, ...] }.
+// Intentionally NOT a full JSON Schema implementation — we avoid the ajv
+// dep (zero-deps rule) and only check the rules T5 + the command contract
+// actually care about.
+export function validateReviewOutput(data) {
+  const errors = [];
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return { ok: false, errors: ["payload is not an object"] };
+  }
+  for (const k of ["verdict", "summary", "findings", "next_steps"]) {
+    if (!(k in data)) errors.push(`missing top-level field: ${k}`);
+  }
+  if ("verdict" in data && !["approve", "needs-attention"].includes(data.verdict)) {
+    errors.push(`verdict must be "approve" or "needs-attention" (no_changes is a companion-side shape, not a valid kimi verdict), got ${JSON.stringify(data.verdict)}`);
+  }
+  if ("summary" in data && (typeof data.summary !== "string" || data.summary.length === 0)) {
+    errors.push("summary must be a non-empty string");
+  }
+  if ("findings" in data) {
+    if (!Array.isArray(data.findings)) {
+      errors.push("findings must be an array");
+    } else {
+      const requiredFindingKeys = [
+        "severity", "title", "body", "file",
+        "line_start", "line_end", "confidence", "recommendation",
+      ];
+      data.findings.forEach((f, i) => {
+        if (!f || typeof f !== "object" || Array.isArray(f)) {
+          errors.push(`findings[${i}] is not an object`);
+          return;
+        }
+        // Per-finding required fields (codex C-H1): reject partial findings.
+        // The prompt explicitly tells kimi to omit entire findings it can't
+        // fill, so missing fields signal the LLM ignored instructions.
+        for (const k of requiredFindingKeys) {
+          if (!(k in f)) errors.push(`findings[${i}] missing required field: ${k}`);
+        }
+        if ("severity" in f && !["critical", "high", "medium", "low"].includes(f.severity)) {
+          errors.push(`findings[${i}].severity must be critical|high|medium|low (NOT translated to Chinese), got ${JSON.stringify(f.severity)}`);
+        }
+        if ("title" in f && (typeof f.title !== "string" || f.title.length === 0)) {
+          errors.push(`findings[${i}].title must be a non-empty string`);
+        }
+        if ("body" in f && (typeof f.body !== "string" || f.body.length === 0)) {
+          errors.push(`findings[${i}].body must be a non-empty string`);
+        }
+        if ("confidence" in f && (typeof f.confidence !== "number" || f.confidence < 0 || f.confidence > 1)) {
+          errors.push(`findings[${i}].confidence must be number in [0,1], got ${JSON.stringify(f.confidence)}`);
+        }
+        for (const k of ["line_start", "line_end"]) {
+          if (k in f && (!Number.isInteger(f[k]) || f[k] < 1)) {
+            errors.push(`findings[${i}].${k} must be integer >= 1, got ${JSON.stringify(f[k])}`);
+          }
+        }
+      });
+    }
+  }
+  if ("next_steps" in data && !Array.isArray(data.next_steps)) {
+    errors.push("next_steps must be an array");
+  }
+  return errors.length === 0 ? { ok: true } : { ok: false, errors };
+}
+
+// Unified review-error shape (codex v1-review C-M2). ALL non-ok returns go
+// through this helper so review-render.md consumers see a consistent
+// { ok:false, error, rawText?, parseError?, firstRawText?, transportError?,
+//   truncated, retry_used, sessionId? } shape — never a raw errorResult
+// spread that leaks callKimi's transport fields (status/partialResponse/events).
+function reviewError({ error, rawText = null, parseError = null, firstRawText = null, transportError = null, truncated, retry_used, sessionId = null }) {
+  return {
+    ok: false,
+    error,
+    rawText,
+    parseError,
+    firstRawText,
+    transportError,
+    truncated,
+    retry_used,
+    sessionId,
+  };
+}
+
+// High-level wrapper: build prompt → callKimi → extract → validate → retry
+// once if parse or validation fails. Returns a shape extended with
+// { verdict, summary, findings, next_steps, truncated, retry_used, sessionId }
+// on success, or the reviewError shape above on failure.
+//
+// Kimi's first-shot JSON compliance is historically uneven (spec §4.2 motivates
+// the retry). The retry prompt appends a terse error hint so kimi corrects in
+// place rather than re-reasoning from scratch. Reusing the same session via
+// `resumeSessionId` is a best-effort nudge; kimi 1.36's session store retains
+// prior messages so the model sees its own malformed output when correcting.
+export function callKimiReview({ context, focus, schemaPath, model, cwd, timeout, truncated = false }) {
+  // Schema load try/catch (codex v1-review C-H2). Without this, a missing or
+  // malformed schema file would throw sync inside buildReviewPrompt and
+  // escape runReview as an uncaught exception. Surface as reviewError instead.
+  let firstPrompt;
+  try {
+    firstPrompt = buildReviewPrompt({ context, focus, schemaPath });
+  } catch (e) {
+    return reviewError({
+      error: `Failed to load review schema at ${schemaPath}: ${e.message}`,
+      truncated,
+      retry_used: false,
+    });
+  }
+
+  const firstResult = callKimi({ prompt: firstPrompt, model, cwd, timeout });
+  if (!firstResult.ok) {
+    return reviewError({
+      error: firstResult.error || "kimi call failed",
+      transportError: { status: firstResult.status ?? null, partialResponse: firstResult.partialResponse ?? null },
+      truncated,
+      retry_used: false,
+      sessionId: firstResult.sessionId ?? null,
+    });
+  }
+
+  const firstExtracted = extractReviewJson(firstResult.response);
+  let firstValidation = null;
+  if (firstExtracted.ok) {
+    firstValidation = validateReviewOutput(firstExtracted.data);
+    if (firstValidation.ok) {
+      return {
+        ok: true,
+        ...firstExtracted.data,
+        truncated,
+        retry_used: false,
+        sessionId: firstResult.sessionId,
+      };
+    }
+  }
+
+  // Operator breadcrumb (gemini v1-review G-L3). Goes to stderr so structured
+  // consumers keep getting clean JSON on stdout, and so background jobs log
+  // the retry rate over time for observability.
+  process.stderr.write("Warning: kimi review response failed parse/validation; retrying once with error hint...\n");
+
+  // Retry once with error hint. Reuse the same session so kimi sees the prior
+  // exchange (best-effort; if session didn't persist, the hint alone still
+  // steers correction).
+  const retryHint = firstExtracted.ok
+    ? `schema validation errors: ${firstValidation.errors.slice(0, 3).join("; ")}`
+    : `parse failure (${firstExtracted.error}${firstExtracted.parseError ? ": " + firstExtracted.parseError : ""})`;
+  let retryPrompt;
+  try {
+    retryPrompt = buildReviewPrompt({ context, focus, schemaPath, retryHint });
+  } catch (e) {
+    return reviewError({
+      error: `Failed to rebuild review prompt for retry: ${e.message}`,
+      firstRawText: firstResult.response,
+      truncated,
+      retry_used: true,
+      sessionId: firstResult.sessionId ?? null,
+    });
+  }
+  const retryResult = callKimi({
+    prompt: retryPrompt,
+    model,
+    cwd,
+    timeout,
+    resumeSessionId: firstResult.sessionId || null,
+  });
+  if (!retryResult.ok) {
+    return reviewError({
+      error: `Retry kimi call failed: ${retryResult.error}`,
+      transportError: { status: retryResult.status ?? null, partialResponse: retryResult.partialResponse ?? null },
+      firstRawText: firstResult.response,
+      truncated,
+      retry_used: true,
+      sessionId: retryResult.sessionId ?? null,
+    });
+  }
+
+  const retryExtracted = extractReviewJson(retryResult.response);
+  if (!retryExtracted.ok) {
+    return reviewError({
+      error: `Review failed after 1 retry: ${retryExtracted.error}`,
+      parseError: retryExtracted.parseError,
+      rawText: retryResult.response,
+      firstRawText: firstResult.response,
+      truncated,
+      retry_used: true,
+      sessionId: retryResult.sessionId ?? null,
+    });
+  }
+  const retryValidation = validateReviewOutput(retryExtracted.data);
+  if (!retryValidation.ok) {
+    return reviewError({
+      error: `Review failed schema validation after 1 retry: ${retryValidation.errors.join("; ")}`,
+      rawText: retryResult.response,
+      firstRawText: firstResult.response,
+      truncated,
+      retry_used: true,
+      sessionId: retryResult.sessionId ?? null,
+    });
+  }
+
+  return {
+    ok: true,
+    ...retryExtracted.data,
+    truncated,
+    retry_used: true,
+    sessionId: retryResult.sessionId,
+  };
 }
 
 // ── Exports for Phase 2+ to consume ────────────────────────
