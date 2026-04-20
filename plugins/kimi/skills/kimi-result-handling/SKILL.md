@@ -36,13 +36,13 @@ If the companion returns an error status (non-zero exit), show it directly with 
 
 ## Command-specific rendering
 
-**Command files (`plugins/kimi/commands/<name>.md`) are authoritative for their own rendering contract.** They supersede this skill's examples when they disagree. The shape of the companion's stdout also varies per command:
+**Per-command rendering rules live in `references/<command>-render.md`.** Read the matching reference for the command you're rendering:
 
-- `/kimi:ask` runs in **text mode** by default. The companion's stdout is `response + "\n" + footer` — Claude presents it **verbatim**, no prefix (no "Kimi says:"), no trailing commentary, no unsolicited follow-up questions. See `ask.md` for the full contract including the declarative error-suggestion templates.
-- `/kimi:review` (Phase 3+) runs in JSON mode. Structured findings are the primary payload; prose is commentary. See `review.md` when it lands.
-- Other `/kimi:*` commands specify their own rendering in their command files.
+- `/kimi:ask` → `references/ask-render.md`
+- `/kimi:review` → `references/review-render.md` (lands in Task 3.6)
+- (others will be added as they land in later phases)
 
-This skill holds the **cross-command** rules. If a command file is silent on a situation, fall back to the Presentation rules above.
+Command files (`plugins/kimi/commands/<name>.md`) remain the authoritative source of truth — the reference docs capture background rationale and cross-command patterns that wouldn't fit in a command file's frontmatter-bounded budget. When a command file and a reference disagree, the command file wins.
 
 ## Chinese/mixed-language output
 
