@@ -437,14 +437,19 @@ export function resolveResultJob(workspaceRoot, reference) {
   return matchJobReference(terminal, reference);
 }
 
-export function resolveCancelableJob(workspaceRoot, reference) {
+export function resolveCancelableJob(workspaceRoot, reference, { anySession = false } = {}) {
   const jobs = listJobs(workspaceRoot);
   const active = jobs.filter(
     (j) => j.status === "queued" || j.status === "running"
   );
   // Without an explicit reference, don't grab active jobs owned by other Claude sessions.
   // Explicit job-id still matches across sessions for precise targeting.
-  if (!reference) {
+  // Callers can opt into cross-session resolution via `{anySession:true}` —
+  // equivalent to how Phase-4-impl-review C-M1 suggested pushing the
+  // companion's `--any-session` branch into this library. The option wins
+  // over the default current-session filter so /kimi:cancel --any-session
+  // reaches jobs submitted from other terminals.
+  if (!reference && !anySession) {
     const currentSession = getCurrentSessionId();
     if (currentSession) {
       return matchJobReference(

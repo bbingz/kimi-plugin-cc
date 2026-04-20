@@ -29,10 +29,9 @@ import {
   cancelJob,
   resolveResumeCandidate,
   readStoredJobResult,
-  sortJobsNewestFirst,
   SESSION_ID_ENV,
 } from "./lib/job-control.mjs";
-import { upsertJob, getConfig, setConfig, listJobs } from "./lib/state.mjs";
+import { upsertJob, getConfig, setConfig } from "./lib/state.mjs";
 import { binaryAvailable } from "./lib/process.mjs";
 import { ensureGitRepository, collectReviewContext, isEmptyContext } from "./lib/git.mjs";
 
@@ -105,6 +104,20 @@ function runSetup(rawArgs) {
   const workspaceRoot = resolveWorkspaceRoot(process.cwd());
   if (options["enable-review-gate"]) {
     setConfig(workspaceRoot, "stopReviewGate", true);
+    // Escape-hatch note (gemini Phase-4-impl-review G-H1): users who hit a
+    // persistent BLOCK response would otherwise feel trapped — the gate adds
+    // up to 15 min to every session stop, and BLOCK cannot be dismissed
+    // from inside the blocked session. Surface the exit door at enable-time.
+    process.stderr.write(
+      [
+        "Note: stop-review-gate enabled for this workspace.",
+        "  • Each session stop will call kimi (up to 15 min timeout).",
+        "  • If kimi returns BLOCK and you need to exit, open a new terminal and run:",
+        "      /kimi:setup --disable-review-gate",
+        "    (or edit stopReviewGate to false in ~/.claude/plugins/kimi/<slug>/state.json)",
+        "",
+      ].join("\n")
+    );
   } else if (options["disable-review-gate"]) {
     setConfig(workspaceRoot, "stopReviewGate", false);
   }
@@ -558,18 +571,13 @@ function runJobCancel(rawArgs) {
   // (gemini v1-review G-H3 / G-M1). Explicit jobId already matches
   // across sessions, so this flag is only useful when the user doesn't
   // remember the id.
-  let job;
-  if (!reference && options["any-session"]) {
-    // Read listJobs directly and pick newest cancelable (queued/running)
-    // without the session filter. Equivalent to gemini's approach when
-    // an explicit id is given.
-    const active = listJobs(workspaceRoot).filter(
-      (j) => j.status === "queued" || j.status === "running"
-    );
-    job = sortJobsNewestFirst(active)[0] || null;
-  } else {
-    job = resolveCancelableJob(workspaceRoot, reference);
-  }
+  //
+  // Phase-4-impl-review C-M1: the `anySession` branch now lives in the
+  // library (resolveCancelableJob) so every future caller sees the same
+  // semantics without re-implementing the session-filter bypass.
+  const job = resolveCancelableJob(workspaceRoot, reference, {
+    anySession: Boolean(options["any-session"]),
+  });
 
   if (!job) {
     process.stdout.write(JSON.stringify({
