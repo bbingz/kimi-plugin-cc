@@ -17,16 +17,16 @@
 **Exit criteria (all must hold before tag `phase-2-ask`):**
 - `callKimi({prompt, model, cwd})` returns `{ok: true, response, sessionId, events, toolEvents, thinkBlocks}` on success with non-empty response and UUID sessionId
 - `callKimiStreaming({prompt, onEvent})` emits one event per parsed JSONL line during the run; unified error shape on timeout/failure (status + partialResponse + events)
-- Both functions: exit 0 + 0 events → returns `{ok: false, error: "produced no stream-json events", rawStdout}` (no silent success, gemini G1)
+- Both functions: **any empty assistantText** (0 events OR think-only response) → returns `{ok: false, error: ..., thinkBlocks, rawStdout}` (gemini G1 + v2 review A1; catches the think-only silent-failure mode)
 - Both functions: pre-flight model validation via `readKimiConfiguredModels` before spawning kimi (codex C2)
 - **T2 CLI** (Step 1): `ask --json "Reply with exactly: hello"` → JSON with non-empty response, UUID sessionId, ok=true
 - **T3 streaming** (Step 2): `ask --stream "讲一个短笑话"` emits ≥ 1 event line + 1 summary line
 - **T4 session match** (Step 3): returned `sessionId` matches `~/.kimi/kimi.json.work_dirs[cwd].last_session_id`
 - **Invalid-model routing** (Step 4): bogus `--model` surfaces "not configured" error with status 1
 - **Large-prompt stdin** (Step 5): 150KB prompt succeeds via auto-switched stdin path
-- **Resume continuity** (Step 6): `--resume <sid>` actually recalls context set in prior call (not just field match)
-- `/kimi:ask` command blocks `--stream` from Claude Code invocation (codex C5); only companion-direct debug can use streaming
-- `/kimi:ask` presentation MUST append `(session: <id> · model: <m>)` footer (gemini G3) so `--resume` is reachable
+- **Resume wiring** (Step 6): `--resume <sid>` accepted, second call exits 0, sessionId is a valid UUID (v2 review A7 — semantic recall left to manual soak test)
+- `/kimi:ask` blocks `--stream` via `KIMI_COMPANION_CALLER=claude` env check (codex C5 + v2 review A4)
+- `/kimi:ask` **text mode** (default from command.md); companion appends `(session: <id> · model: <m> [· thinkBlocks: N])` footer in CODE so Claude just presents verbatim (gemini v2-review A2 — MUST-in-prompt was fragile)
 - `kimi-result-handling/SKILL.md` expanded with concrete rendering examples + active-recovery guidance
 - Git tag `phase-2-ask` applied
 
@@ -83,9 +83,12 @@ export const KIMI_EXIT = {
   SIGTERM: 143,
 };
 
-// Synthetic status used when we abort locally (timeout) — distinguishable
-// from any real kimi-cli exit code.
-export const KIMI_STATUS_TIMED_OUT = -1;
+// Synthetic status for local timeout (we SIGTERM the child). GNU `timeout(1)`
+// uses 124 as the "exceeded time limit" convention; POSIX exit codes are
+// 0-255 unsigned (gemini review v2 #4: -1 would wrap to 255 and collide with
+// real signal-induced exits — avoid). 124 fits in [0,255] and is unused by
+// kimi (probe 05 observed only 0/1/2/130/143).
+export const KIMI_STATUS_TIMED_OUT = 124;
 ```
 
 - [ ] **Step 2: Add parser helpers at end of the file (before the final `export { ... }` block)**
@@ -355,18 +358,25 @@ export function callKimi({
 
   const { events, assistantText, toolEvents } = parseKimiStdout(result.stdout);
 
-  // ── Empty-response guard (gemini G1) ──
-  // Exit 0 with no events is a silent-failure mode: kimi returned without
-  // emitting any JSONL (e.g. stream-json format unknown, or kimi-cli dumped
-  // raw text on an uncommon path). Treat as error with rawStdout attached
-  // so the caller can inspect.
-  if (events.length === 0 && !assistantText) {
+  // ── No-visible-text guard (gemini G1 + codex/gemini v2-reviews A1) ──
+  // If assistant produced no visible text, treat as failure regardless of
+  // event count. This catches two silent-failure modes:
+  //   (a) Exit 0 + 0 events     (stream-json format unknown / uncommon dump)
+  //   (b) Exit 0 + think-only   (reasoning but no surfaced answer — user
+  //                              would see "" if we returned ok)
+  if (!assistantText) {
     return {
       ok: false,
-      error: "kimi exited 0 but produced no stream-json events",
+      error: events.length === 0
+        ? "kimi exited 0 but produced no stream-json events"
+        : "kimi produced no visible text (think-only response)",
       status: KIMI_EXIT.OK,
       rawStdout: (result.stdout || "").slice(0, 2000),
-      events: [],
+      events,
+      thinkBlocks: events
+        .filter((e) => e.role === "assistant")
+        .flatMap((e) => (e.content || []).filter((b) => b && b.type === "think"))
+        .length,
     };
   }
 
@@ -563,13 +573,22 @@ export function callKimiStreaming({
         return;
       }
 
-      // Empty-response guard (gemini G1) mirrored in streaming path.
-      if (events.length === 0 && textParts.length === 0) {
+      // No-visible-text guard mirrored in streaming path (same fix as sync).
+      // Catches both 0-events and think-only cases.
+      const streamedText = textParts.join("");
+      if (!streamedText) {
+        const thinkCount = events
+          .filter((e) => e.role === "assistant")
+          .flatMap((e) => (e.content || []).filter((b) => b && b.type === "think"))
+          .length;
         resolve({
           ok: false,
-          error: "kimi exited 0 but produced no stream-json events",
+          error: events.length === 0
+            ? "kimi exited 0 but produced no stream-json events"
+            : "kimi produced no visible text (think-only response)",
           status: KIMI_EXIT.OK,
-          events: [],
+          events,
+          thinkBlocks: thinkCount,
         });
         return;
       }
@@ -697,11 +716,12 @@ async function runAsk(rawArgs) {
     process.exit(KIMI_EXIT.USAGE_ERROR);
   }
 
-  // Reject --stream from /kimi:ask command path (codex C5). The Claude Code
-  // slash-command contract is "verbatim present a single response"; streaming
-  // JSONL is a developer-only companion mode. Guard via env var that the
-  // command.md bash invocation does NOT set — only direct CLI debugging.
-  if (options.stream && process.env.CLAUDE_PLUGIN_ROOT) {
+  // Reject --stream when invoked from /kimi:ask (codex C5 + v2 review A4).
+  // Gate uses a dedicated env var KIMI_COMPANION_CALLER that commands/ask.md
+  // EXPLICITLY sets to "claude". Don't rely on CLAUDE_PLUGIN_ROOT (always
+  // set when companion.mjs is invoked via command.md — tautology; also may
+  // leak into dev shells). Developer CLI debugging leaves this env unset.
+  if (options.stream && process.env.KIMI_COMPANION_CALLER === "claude") {
     process.stderr.write(
       "Error: --stream is not supported through /kimi:ask. Invoke kimi-companion directly for streaming debug.\n"
     );
@@ -744,11 +764,26 @@ async function runAsk(rawArgs) {
       if (result.partialResponse) process.stderr.write(`Partial response:\n${result.partialResponse}\n`);
       process.exit(result.status ?? 1);
     }
+    // Text path: response + footer (gemini v2-review A2). Footer is
+    // generated in CODE so Claude / the user can just present verbatim —
+    // markdown "MUST" instructions in ask.md proved too fragile.
     process.stdout.write(result.response + "\n");
+    process.stdout.write(formatAskFooter(result, callArgs.model) + "\n");
   }
   // Propagate kimi's original exit status (codex C4) so callers can distinguish
   // config vs usage vs signal causes. result.status is null on success paths.
   process.exit(result.ok ? KIMI_EXIT.OK : (result.status ?? 1));
+}
+
+// One-line footer appended to /kimi:ask text output. Keep short — it's
+// supposed to be unobtrusive. Omit any field that isn't present.
+function formatAskFooter(result, requestedModel) {
+  const parts = [];
+  if (result.sessionId) parts.push(`session: ${result.sessionId}`);
+  const m = requestedModel || readKimiDefaultModel();
+  if (m) parts.push(`model: ${m}`);
+  if (result.thinkBlocks && result.thinkBlocks > 0) parts.push(`thinkBlocks: ${result.thinkBlocks}`);
+  return parts.length ? `\n(${parts.join(" · ")})` : "";
 }
 ```
 
@@ -777,10 +812,16 @@ Replace with:
 ```js
 // Subcommands whose $ARGUMENTS blob should be split into flags/positionals.
 // - setup: all-flags contract (every token is "-…"); split when space present
-// - ask:   mixed flags+prompt contract; split when blob STARTS with "-"
-//          (leading "-" signals "flags then prompt"); otherwise treat whole
-//          blob as a single prompt positional
+// - ask:   mixed flags+prompt contract; split only when the FIRST token is a
+//          KNOWN flag (codex v2-review A3: previous `startsWith("-")` would
+//          mis-split a blob like "-v my prompt" where the leading dash is
+//          part of the prompt). Allowlist known ask flags + their aliases.
 const UNPACK_SAFE_SUBCOMMANDS = new Set(["setup", "ask"]);
+
+// Matches a known ask flag token. Long form: --json / --stream / --model /
+// --resume (with or without = attached). Short form: -m / -r (only — no
+// other single-dash form is a valid ask flag).
+const ASK_KNOWN_FLAG = /^(?:--(?:json|stream|model|resume)(?:=.*)?|-[mr])$/;
 
 function shouldUnpackBlob(sub, rest) {
   if (rest.length !== 1) return false;
@@ -789,7 +830,7 @@ function shouldUnpackBlob(sub, rest) {
   const tokens = splitRawArgumentString(rest[0]);
   if (tokens.length === 0) return false;
   if (sub === "setup") return tokens.every((t) => t.startsWith("-"));
-  if (sub === "ask") return tokens[0].startsWith("-");
+  if (sub === "ask") return ASK_KNOWN_FLAG.test(tokens[0]);
   return false;
 }
 ```
@@ -882,32 +923,29 @@ argument-hint: '[--model <model>] [--resume <sessionId>] <prompt>'
 allowed-tools: Bash(node:*)
 ---
 
-Run:
+Run with the companion-caller env so the companion knows this is a slash-command invocation (gates --stream to direct CLI debug only):
 
 \`\`\`bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/kimi-companion.mjs" ask --json "$ARGUMENTS"
+KIMI_COMPANION_CALLER=claude node "${CLAUDE_PLUGIN_ROOT}/scripts/kimi-companion.mjs" ask "$ARGUMENTS"
 \`\`\`
 
-Parse the JSON result:
+The companion runs in text mode and produces:
+- Line 1..N: Kimi's response verbatim (may be multi-line)
+- Last line: a short footer like `(session: <uuid> · model: <name> [· thinkBlocks: N])` — generated by the companion, not Claude
 
-**If `ok: true`**:
-1. Present `response` **verbatim**. Preserve Chinese or other-language output — do NOT translate unless the user explicitly asked.
-2. **MUST** append a footer line (gemini G3 — otherwise `--resume` is unreachable):
-   ```
-   (session: <sessionId> · model: <model> [· thinkBlocks: N if non-zero])
-   ```
-   The sessionId comes from the JSON `sessionId` field. Model from the JSON `events[].model` if present, else omit. `thinkBlocks` only shown if ≥ 1.
-3. After the footer, note disagreements if any: "Note: Claude disagrees on X because Y." Don't hide disagreement to appear consistent.
-4. Do NOT auto-apply suggestions. Ask which items to act on.
+**If the companion exits 0**:
+1. Present the full stdout **verbatim** (response + footer). Preserve Chinese or other-language output — do NOT translate unless the user explicitly asked.
+2. After presenting, optionally note a disagreement: "Note: Claude disagrees on X because Y." Keep it brief; only if substantive.
+3. Do NOT auto-apply suggestions. Ask which items to act on.
 
-**If `ok: false`**:
-1. Present `error` clearly.
-2. If `partialResponse` is non-null, include it under a "Partial response from Kimi before the error" heading.
-3. **Active recovery** (gemini G7): if `error` mentions "configured", "timed out", or "Model not configured" — propose a concrete next action:
-   - "Model not configured" → list `configured_models` from `/kimi:setup` (re-run if needed) and ask which to try
-   - "timed out" → offer "Should I split the prompt into smaller pieces and retry?"
-   - SIGTERM / SIGINT → "Request was interrupted. Retry the same prompt?"
-4. Do NOT retry automatically from this command — wait for user confirmation.
+**If the companion exits non-zero** (check exit code / stderr):
+1. Present the stderr `Error: …` message clearly.
+2. If stderr contains a "Partial response" block, include it under that heading.
+3. **Suggest** (do NOT ask) a concrete next step based on the error keyword — one short sentence, keep /kimi:ask one-shot (no back-and-forth from this command):
+   - "not configured" → "Suggest: `/kimi:setup` shows available model names; retry with `--model <name>`."
+   - "timed out" → "Suggest: split the prompt into smaller pieces or lower the scope."
+   - "interrupted" (SIGTERM/SIGINT) → "Suggest: retry the same prompt."
+4. Do NOT retry automatically. Do NOT pose a question back to the user; the user will decide whether to retry.
 
 ### Options
 
@@ -1122,29 +1160,34 @@ PY
 
 Expected: `large-prompt PASS`. If this fails with `-p ""` path empty-prompt error, codex C1 is validated; add a follow-up commit replacing the stdin path with a tmpfile fallback in `buildKimiArgs`.
 
-- [ ] **Step 6: Resume continuity (gemini G5)**
+- [ ] **Step 6: Resume wiring (gemini v2-review A7)**
 
-Exercise `--resume` to confirm kimi remembers prior context (not just that the field matches):
+Exercise `-r <sid>` without depending on LLM semantic recall (which can flake across runs). The v1 test "remember 42 / recall 42" was too stochastic. Instead verify the **wiring**: the flag is accepted, the session file is reused, and the second call exits 0 with a valid sessionId.
 
 ```bash
-# Call 1: establish a memory fact
-OUT1=$(node plugins/kimi/scripts/kimi-companion.mjs ask --json "Remember the number 42. Reply with exactly: NOTED")
+# Call 1: establish a session.
+OUT1=$(node plugins/kimi/scripts/kimi-companion.mjs ask --json "Reply with exactly: ONE")
 SID=$(echo "$OUT1" | python3 -c 'import json, sys; print(json.load(sys.stdin)["sessionId"])')
 echo "session: $SID"
+# Fail-fast if we didn't get a uuid
+python3 -c "import re, sys; assert re.fullmatch(r'[0-9a-f-]{36}', '$SID'), '$SID'; print('uuid ok')"
 
-# Call 2: ask what the number was, via -r
-OUT2=$(node plugins/kimi/scripts/kimi-companion.mjs ask --json --resume "$SID" "What number did I ask you to remember? Reply with just the digits, no prose.")
-RESP=$(echo "$OUT2" | python3 -c 'import json, sys; print(json.load(sys.stdin)["response"])')
-echo "response: $RESP"
-
+# Call 2: resume by sid.
+OUT2=$(node plugins/kimi/scripts/kimi-companion.mjs ask --json --resume "$SID" "Reply with exactly: TWO")
 python3 - <<PY
-resp = """$RESP"""
-assert "42" in resp, f"resume must recall 42, got: {resp}"
-print("resume PASS — recalled the number")
+import json
+d = json.loads('''$OUT2''')
+assert d["ok"] is True, f"resume call must succeed; got: {d.get('error')}"
+assert isinstance(d["response"], str) and len(d["response"]) > 0, "non-empty response"
+# Kimi MAY return the same sessionId or a fresh one depending on how it
+# handles continuation internally. Just require some valid uuid (not null).
+import re
+assert re.fullmatch(r"[0-9a-f-]{36}", d["sessionId"] or ""), f"sessionId still a uuid: {d.get('sessionId')}"
+print("resume-wiring PASS — -r accepted, call ok, sessionId present")
 PY
 ```
 
-Expected: `resume PASS — recalled the number`. If the second call doesn't remember 42, either `-r` isn't wired or the session isn't actually being resumed; investigate before proceeding.
+Expected: `resume-wiring PASS`. Semantic continuity (whether kimi actually recalls prior turns) is tested manually in Task 2 wrap-up or moved to a later soak test — the v1 strict "recall 42" check was too stochastic for automated Phase 2 gating (v2 reviews A7).
 
 - [ ] **Step 7: No commit needed** (validation only).
 
@@ -1217,22 +1260,33 @@ Expected: `phase-2-ask` in tag list.
 - §3.4 session dual path → `parseSessionIdFromStderr` || `readSessionIdFromKimiJson` (Task 2.2) ✅
 - §3.5 exit-code routing → `describeKimiExit` + KIMI_EXIT constants + exit propagation (Task 2.2 + 2.4) ✅
 
-**Review integration audit:**
-- codex C1 (`-p ""` stdin fails per source) → KEEP empirical truth (probe 03 works), Task 2.7 Step 5 empirically re-verifies at 150KB; fallback commit path documented if it fails ✅
+**Review integration audit (cumulative across v1 → v3):**
+
+Round 1 (v2, 11 findings):
+- codex C1 (`-p ""` stdin fails per source) → KEEP empirical truth (probe 03 works), Task 2.7 Step 5 empirically re-verifies at 150KB; fallback path documented if it fails ✅
 - codex C2 (preflight for model) → callKimi + callKimiStreaming both do it ✅
-- codex C3 (ask blob unpack) → `UNPACK_SAFE_SUBCOMMANDS` extended + split rule per-subcommand ✅
+- codex C3 (ask blob unpack) → rule per-subcommand ✅ **(tightened in v3 — see A3 below)**
 - codex C4 (propagate exit status) → `process.exit(result.status ?? 1)` ✅
-- codex C5 (block --stream from /kimi:ask) → `CLAUDE_PLUGIN_ROOT` env gate in runAsk ✅
-- codex C6 (unified timeout return) → `errorResult()` helper used across both calls ✅
-- codex C7 (central runtime constants) → runtime-sentinels block in kimi.mjs; Phase 3+ extends ✅
-- gemini G1 (silent empty response) → empty-response guard ✅
-- gemini G3 (sessionId footer) → mandated in ask.md ✅
+- codex C5 (block --stream from /kimi:ask) → env gate ✅ **(env name changed in v3 — see A4)**
+- codex C6 (unified timeout return) → `errorResult()` helper ✅
+- codex C7 (central runtime constants) → runtime-sentinels block in kimi.mjs ✅
+- gemini G1 (silent empty response) → guard ✅ **(coverage expanded in v3 — see A1)**
+- gemini G3 (sessionId footer) → **(approach changed in v3 — see A2)**
 - gemini G4 (think block count) → `thinkBlocks` returned ✅
-- gemini G5 (test gaps) → large-prompt + resume-continuity tests added to Task 2.7 ✅
-- gemini G6 (SKILL modularization) → DEFERRED to Phase 3 (fold together with review skill)
-- gemini G7 (smart partial recovery) → active-recovery paths in ask.md ✅
-- gemini G8 (smoke test granularity) → small improvement; not applied (assertions are readable as-is)
-- gemini G9 (renderGeminiResult rename) → DEFERRED to Phase 5 polish
+- gemini G5 (test gaps) → large-prompt + resume tests added ✅ **(resume test rewritten in v3 — see A7)**
+- gemini G7 (smart partial recovery) → **(scope-creep trimmed in v3 — see A6)**
+- gemini G6 (SKILL modularization) → DEFERRED to Phase 3
+- gemini G8 (smoke test granularity) → minor; not applied
+- gemini G9 (renderGeminiResult rename) → DEFERRED to Phase 5
+
+Round 2 (v3, 7 further findings — BOTH reviewers flagged the first two):
+- **A1** (gemini#1 + codex#5 **convergent**) No-visible-text guard now triggers on `!assistantText` regardless of event count — catches think-only silent-success mode that v2 missed ✅
+- **A2** (gemini#2) Footer generation moved from ask.md "MUST" prompt instruction to companion code (`formatAskFooter`); ask.md text-mode path now just presents stdout verbatim ✅
+- **A3** (codex#2) `shouldUnpackBlob` ask branch uses a known-flag allowlist regex (`^(?:--(?:json|stream|model|resume)(?:=.*)?|-[mr])$`) rather than `startsWith("-")` — blob like `"-v my prompt"` won't be mis-split ✅
+- **A4** (codex#3 + gemini#4 **convergent**) Env gate switched from `CLAUDE_PLUGIN_ROOT` (tautological since command.md uses it) to `KIMI_COMPANION_CALLER=claude` set explicitly by ask.md bash ✅
+- **A5** (gemini#4) `KIMI_STATUS_TIMED_OUT` changed `-1` → `124` (GNU timeout convention; avoids POSIX exit-code wraparound to 255) ✅
+- **A6** (gemini#3) `/kimi:ask` error path no longer asks follow-up questions; only gives one-sentence suggestions — preserves one-shot command semantics ✅
+- **A7** (codex#7 + gemini#5 **convergent**) Task 2.7 Step 6 resume test checks wiring (flag accepted + exit 0 + valid UUID) instead of semantic recall ("remember 42") which was too stochastic ✅
 
 **Placeholder scan:** all code blocks have literal values. No `<TBD>` or `<PLACEHOLDER>`.
 

@@ -2,6 +2,20 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-20 [Claude Opus 4.7 — Phase 2 plan v3 after second 3-way review]
+
+- **status**: done
+- **scope**: docs/superpowers/plans/2026-04-20-phase-2-ask-streaming.md
+- **summary**: Second 3-way review caught 2 BLOCKERS in v2 that both codex and gemini independently flagged (convergent signal → real problems). 7 total fixes integrated:
+  - **A1 (BLOCKER, convergent)**: empty-response guard widened from `events.length === 0 && !assistantText` to just `!assistantText` — now catches think-only responses (events=1 with only think blocks, no visible text).
+  - **A2 (BLOCKER)**: footer generation moved from ask.md `**MUST** append` prompt instruction (fragile) to companion code in text-mode path (`formatAskFooter`). ask.md now says "present stdout verbatim" — no Claude formatting drift.
+  - **A3 (BLOCKER)**: `shouldUnpackBlob` ask branch narrowed from `tokens[0].startsWith("-")` to a known-flag allowlist regex — `-v my prompt` no longer mis-splits.
+  - **A4 (High, convergent)**: env gate switched from `CLAUDE_PLUGIN_ROOT` (command.md already uses it — tautological; may leak into dev shells) to dedicated `KIMI_COMPANION_CALLER=claude` explicitly exported by ask.md bash.
+  - **A5 (High)**: `KIMI_STATUS_TIMED_OUT` changed from `-1` (POSIX wraparound to 255, collides with real exits) to `124` (GNU timeout convention, unused by kimi).
+  - **A6 (Medium)**: `/kimi:ask` error path no longer asks follow-up questions — only one-sentence suggestions. Keeps one-shot command semantics.
+  - **A7 (Low, convergent)**: Task 2.7 Step 6 resume test rewritten — verifies `-r` wiring (flag accepted, exit 0, valid UUID) instead of brittle "remember 42" semantic recall.
+- **next**: subagent-driven execution of plan-2-ask-streaming v3.
+
 ## 2026-04-20 [Claude Opus 4.7 — Phase 2 plan v2 after 3-way review]
 
 - **status**: done
