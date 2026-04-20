@@ -6,15 +6,20 @@ import {
   getKimiAuthStatus,
   readKimiDefaultModel,
   readKimiConfiguredModels,
+  callKimi,
+  callKimiStreaming,
+  KIMI_EXIT,
 } from "./lib/kimi.mjs";
 import { binaryAvailable } from "./lib/process.mjs";
 
 const USAGE = `Usage: kimi-companion <subcommand> [options]
 
 Subcommands:
-  setup [--json]    Check kimi CLI availability, auth, and configured models
+  setup [--json]                       Check kimi CLI availability, auth, and configured models
+  ask [--json] [--stream] [-m <model>] [-r <sessionId>] "<prompt>"
+                                       Send a one-shot prompt. --stream emits JSONL events as they arrive.
 
-(More subcommands arrive in Phase 2+.)`;
+(More subcommands arrive in Phase 3+.)`;
 
 // Detects which installers the user has available for /kimi:setup to suggest.
 function detectInstallers() {
@@ -76,24 +81,141 @@ function formatSetupText(s) {
   return lines.join("\n");
 }
 
+async function runAsk(rawArgs) {
+  const { options, positionals } = parseArgs(rawArgs, {
+    valueOptions: ["model", "resume"],
+    booleanOptions: ["json", "stream"],
+    aliasMap: { m: "model", r: "resume" },
+  });
+
+  // Reject "-X=value" short-form flags (codex v3-review A3). parseArgs
+  // treats these as positionals, which would silently leak into the prompt.
+  // Narrowly match only single-letter short + '=' so legitimate prompts
+  // containing dashes aren't rejected.
+  for (const p of positionals) {
+    if (/^-[a-zA-Z]=/.test(p)) {
+      process.stderr.write(
+        `Error: '${p}' — short flags cannot use '=' form. Use '-m value' (space-separated) or the long form '--model=value'.\n`
+      );
+      process.exit(KIMI_EXIT.USAGE_ERROR);
+    }
+  }
+
+  const prompt = positionals.join(" ").trim();
+  if (!prompt) {
+    process.stderr.write(
+      "Error: /kimi:ask requires a prompt.\nUsage: kimi-companion ask [--json] [-m <model>] [-r <sid>] \"<prompt>\"\n"
+    );
+    process.exit(KIMI_EXIT.USAGE_ERROR);
+  }
+
+  // Reject --stream when invoked from /kimi:ask (codex C5 + v2 review A4).
+  // Gate uses a dedicated env var KIMI_COMPANION_CALLER that commands/ask.md
+  // EXPLICITLY sets to "claude". Don't rely on CLAUDE_PLUGIN_ROOT (always
+  // set when companion.mjs is invoked via command.md — tautology; also may
+  // leak into dev shells). Developer CLI debugging leaves this env unset.
+  if (options.stream && process.env.KIMI_COMPANION_CALLER === "claude") {
+    process.stderr.write(
+      "Error: --stream is not supported through /kimi:ask. Invoke kimi-companion directly for streaming debug.\n"
+    );
+    process.exit(KIMI_EXIT.USAGE_ERROR);
+  }
+
+  const callArgs = {
+    prompt,
+    model: options.model || null,
+    resumeSessionId: options.resume || null,
+    cwd: process.cwd(),
+  };
+
+  if (options.stream) {
+    // Developer streaming mode: emit each event as a JSONL line (same wire
+    // shape as input), then a final summary line {summary:{...}}.
+    const result = await callKimiStreaming({
+      ...callArgs,
+      onEvent: (ev) => { process.stdout.write(JSON.stringify(ev) + "\n"); },
+    });
+    const summary = {
+      summary: {
+        ok: result.ok,
+        response: result.response || null,
+        sessionId: result.sessionId || null,
+        error: result.error || null,
+        thinkBlocks: result.thinkBlocks ?? null,
+      },
+    };
+    process.stdout.write(JSON.stringify(summary) + "\n");
+    process.exit(result.ok ? KIMI_EXIT.OK : (result.status ?? 1));
+  }
+
+  const result = callKimi(callArgs);
+  if (options.json) {
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+  } else {
+    if (!result.ok) {
+      process.stderr.write(`Error: ${result.error}\n`);
+      if (result.partialResponse) process.stderr.write(`Partial response:\n${result.partialResponse}\n`);
+      process.exit(result.status ?? 1);
+    }
+    // Text path: response + footer (gemini v2-review A2). Footer is
+    // generated in CODE so Claude / the user can just present verbatim —
+    // markdown "MUST" instructions in ask.md proved too fragile.
+    process.stdout.write(result.response + "\n");
+    process.stdout.write(formatAskFooter(result, callArgs.model) + "\n");
+    // Visible warning on silent session-id capture failure (codex v3 A2):
+    // this shouldn't normally happen (probe 01 + 02 proved both paths work),
+    // but if it does we want the user to know --resume won't work.
+    if (!result.sessionId) {
+      process.stderr.write(
+        "Warning: session_id could not be captured. --resume will not work for this call.\n"
+      );
+    }
+  }
+  // Propagate kimi's original exit status (codex C4) so callers can distinguish
+  // config vs usage vs signal causes. result.status is null on success paths.
+  process.exit(result.ok ? KIMI_EXIT.OK : (result.status ?? 1));
+}
+
+// One-line footer appended to /kimi:ask text output. Keep short — it's
+// supposed to be unobtrusive. session is ALWAYS shown (even as "unknown")
+// so the user knows a session existed but capture failed (codex v3-review A2);
+// silent omission hides a bug instead of exposing it.
+function formatAskFooter(result, requestedModel) {
+  const parts = [];
+  parts.push(`session: ${result.sessionId || "unknown (not captured)"}`);
+  const m = requestedModel || readKimiDefaultModel();
+  if (m) parts.push(`model: ${m}`);
+  if (result.thinkBlocks && result.thinkBlocks > 0) parts.push(`thinkBlocks: ${result.thinkBlocks}`);
+  return `\n(${parts.join(" · ")})`;
+}
+
 // ── Dispatcher ─────────────────────────────────────────────
 
-// Phase 1 only needs to unpack $ARGUMENTS for the `setup` subcommand.
-// Phase 2+ subcommands (ask / review / rescue) take positional prompts
-// that may contain spaces — blindly splitting a single-blob argv would
-// break them. Gate the unpack on (a) subcommand being setup AND (b) the
-// blob looking like a flag list (every shell token starts with "-").
-const UNPACK_SAFE_SUBCOMMANDS = new Set(["setup"]);
+// Subcommands whose $ARGUMENTS blob should be split into flags/positionals.
+// - setup: all-flags contract (every token is "-…"); split when space present
+// - ask:   mixed flags+prompt contract; split only when the FIRST token is a
+//          KNOWN flag (codex v2-review A3: previous `startsWith("-")` would
+//          mis-split a blob like "-v my prompt" where the leading dash is
+//          part of the prompt). Allowlist known ask flags + their aliases.
+const UNPACK_SAFE_SUBCOMMANDS = new Set(["setup", "ask"]);
+
+// Matches a known ask flag token. Long form: --json / --stream / --model /
+// --resume (with or without = attached). Short form: -m / -r (only — no
+// other single-dash form is a valid ask flag).
+const ASK_KNOWN_FLAG = /^(?:--(?:json|stream|model|resume)(?:=.*)?|-[mr])$/;
 
 function shouldUnpackBlob(sub, rest) {
   if (rest.length !== 1) return false;
   if (!UNPACK_SAFE_SUBCOMMANDS.has(sub)) return false;
   if (!rest[0].includes(" ")) return false;
   const tokens = splitRawArgumentString(rest[0]);
-  return tokens.length > 0 && tokens.every((t) => t.startsWith("-"));
+  if (tokens.length === 0) return false;
+  if (sub === "setup") return tokens.every((t) => t.startsWith("-"));
+  if (sub === "ask") return ASK_KNOWN_FLAG.test(tokens[0]);
+  return false;
 }
 
-function main() {
+async function main() {
   const argv = process.argv.slice(2);
   let [sub, ...rest] = argv;
 
@@ -104,6 +226,8 @@ function main() {
   switch (sub) {
     case "setup":
       return runSetup(rest);
+    case "ask":
+      return runAsk(rest);
     case undefined:
     case "--help":
     case "-h":
