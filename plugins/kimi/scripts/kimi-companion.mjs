@@ -91,6 +91,24 @@ function runSetup(rawArgs) {
     booleanOptions: ["json", "enable-review-gate", "disable-review-gate"],
   });
 
+  // Review-gate toggle (spec §4.2 `/kimi:setup --enable/disable-review-gate`).
+  // State is PER-WORKSPACE (codex v1-review C-M3): getConfig/setConfig route
+  // through `resolveStateFile(workspaceRoot)` which slugs the repo path
+  // under ~/.claude/plugins/kimi/<workspace-slug>/state.json. Enabling the
+  // gate in one repo does NOT enable it globally. Document this in the
+  // user-visible output below + run the toggle from the repo you want
+  // gated.
+  if (options["enable-review-gate"] && options["disable-review-gate"]) {
+    process.stderr.write("Error: pass only one of --enable-review-gate / --disable-review-gate.\n");
+    process.exit(KIMI_EXIT.USAGE_ERROR);
+  }
+  const workspaceRoot = resolveWorkspaceRoot(process.cwd());
+  if (options["enable-review-gate"]) {
+    setConfig(workspaceRoot, "stopReviewGate", true);
+  } else if (options["disable-review-gate"]) {
+    setConfig(workspaceRoot, "stopReviewGate", false);
+  }
+
   const availability = getKimiAvailability();
   const installers = detectInstallers();
 
@@ -109,6 +127,10 @@ function runSetup(rawArgs) {
     model: auth.model || readKimiDefaultModel() || null,
     configured_models: configured,
     installers,
+    stopReviewGate: getConfig(workspaceRoot).stopReviewGate === true,
+    // Tell consumers exactly WHICH workspace this gate setting belongs to
+    // so it's obvious when (and where) to toggle (C-M3).
+    stopReviewGateWorkspace: workspaceRoot,
   };
 
   if (options.json) {
