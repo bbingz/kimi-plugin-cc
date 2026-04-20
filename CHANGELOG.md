@@ -2,6 +2,13 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-20 [Claude Sonnet 4.6 — Phase 4 Task 4.1: job-control + prompts port]
+
+- **status**: done
+- **scope**: plugins/kimi/scripts/lib/job-control.mjs (new), plugins/kimi/scripts/lib/prompts.mjs (new), plugins/kimi/scripts/lib/state.mjs (+3 stubs)
+- **summary**: Ported `job-control.mjs` (599 lines) from gemini-plugin-cc with 5 sed substitutions (callGeminiStreaming→callKimiStreaming, geminiSessionId→kimiSessionId, GEMINI_COMPANION_SESSION_ID→KIMI_COMPANION_SESSION_ID, import path, "ga"→"ka" prefix). Removed `approvalMode` param and rewrote onEvent callback for kimi's role-based (non-typed) event model. Created `prompts.mjs` (byte-aligned 14-line port). Added 3 timing-history stubs to state.mjs (`resolveTimingHistoryFile`, `appendTimingHistory`, `readTimingHistory`) as intentional no-ops — kimi has no stats surface in v0.1. All 3 files pass `node --check` and smoke test.
+- **next**: Task 4.2 — port `kimi-agent` worker script + `/kimi:status` + `/kimi:result` + `/kimi:cancel` commands.
+
 ## 2026-04-20 [Claude Opus 4.7 — Phase 3 post-review polish]
 
 - **status**: done
