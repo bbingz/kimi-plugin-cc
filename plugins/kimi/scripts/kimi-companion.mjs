@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import process from "node:process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
 import {
   getKimiAvailability,
@@ -8,9 +10,16 @@ import {
   readKimiConfiguredModels,
   callKimi,
   callKimiStreaming,
+  callKimiReview,
   KIMI_EXIT,
+  MAX_REVIEW_DIFF_BYTES,
 } from "./lib/kimi.mjs";
 import { binaryAvailable } from "./lib/process.mjs";
+import { ensureGitRepository, collectReviewContext } from "./lib/git.mjs";
+
+// Plugin root is two levels above this file (scripts/kimi-companion.mjs →
+// plugins/kimi). Used for loading packaged schemas.
+const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const USAGE = `Usage: kimi-companion <subcommand> [options]
 
@@ -18,8 +27,10 @@ Subcommands:
   setup [--json]                       Check kimi CLI availability, auth, and configured models
   ask [--json] [--stream] [-m <model>] [-r <sessionId>] "<prompt>"
                                        Send a one-shot prompt. --stream emits JSONL events as they arrive.
+  review [--base <ref>] [--scope <auto|staged|unstaged|working-tree|branch>] [-m <model>] [focus...]
+                                       Review current diff. Always emits JSON matching review-output schema.
 
-(More subcommands arrive in Phase 3+.)`;
+(More subcommands arrive in Phase 4+.)`;
 
 // Detects which installers the user has available for /kimi:setup to suggest.
 function detectInstallers() {
@@ -210,6 +221,84 @@ function formatAskFooter(result, requestedModel) {
   return `\n(${parts.join(" · ")})`;
 }
 
+async function runReview(rawArgs) {
+  const { options, positionals } = parseArgs(rawArgs, {
+    valueOptions: ["model", "base", "scope"],
+    booleanOptions: ["json"],
+    aliasMap: { m: "model" },
+  });
+
+  // /kimi:review ALWAYS emits JSON (reference/review-render.md). The --json
+  // flag is accepted for consistency with ask but the default is also json.
+  const emitJson = true;
+
+  const cwd = process.cwd();
+  try {
+    ensureGitRepository(cwd);
+  } catch (e) {
+    process.stdout.write(JSON.stringify({ ok: false, error: e.message }, null, 2) + "\n");
+    process.exit(1);
+  }
+
+  const scope = options.scope || "auto";
+  const base = options.base || null;
+  const context = collectReviewContext(cwd, { base, scope });
+
+  if (!context.content || !context.content.trim()) {
+    process.stdout.write(JSON.stringify({
+      ok: true,
+      verdict: "no_changes",
+      response: "No changes to review.",
+      truncated: false,
+    }, null, 2) + "\n");
+    process.exit(0);
+  }
+
+  let truncated = false;
+  if (context.content.length > MAX_REVIEW_DIFF_BYTES) {
+    context.content = context.content.slice(0, MAX_REVIEW_DIFF_BYTES)
+      + "\n\n... [TRUNCATED — diff exceeded review budget] ...";
+    truncated = true;
+  }
+
+  const focus = positionals.join(" ").trim() || null;
+  const schemaPath = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
+
+  // Defensive wrapper (codex v1-review C-H2): callKimiReview already catches
+  // schema-load/prompt-rebuild via its own try/catch, but any other unexpected
+  // throw (fs race, OOM) must NOT escape as an uncaught exception.
+  let result;
+  try {
+    result = callKimiReview({
+      context,
+      focus,
+      schemaPath,
+      model: options.model || null,
+      cwd,
+      truncated,
+    });
+  } catch (e) {
+    result = {
+      ok: false,
+      error: `Unexpected error during review: ${e.message}`,
+      truncated,
+      retry_used: false,
+    };
+  }
+
+  process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+
+  // Extend sessionId-null warning (Task 3.1 cash-in carries over here too).
+  if (result.ok && !result.sessionId) {
+    process.stderr.write(
+      "Warning: session_id could not be captured. --resume will not work for this review.\n"
+    );
+  }
+
+  // Non-OK reviews exit 1 so callers (hooks, scripts) can branch on status.
+  process.exit(result.ok ? KIMI_EXIT.OK : 1);
+}
+
 // ── Dispatcher ─────────────────────────────────────────────
 
 // Subcommands whose $ARGUMENTS blob should be split into flags/positionals.
@@ -218,12 +307,13 @@ function formatAskFooter(result, requestedModel) {
 //          KNOWN flag (codex v2-review A3: previous `startsWith("-")` would
 //          mis-split a blob like "-v my prompt" where the leading dash is
 //          part of the prompt). Allowlist known ask flags + their aliases.
-const UNPACK_SAFE_SUBCOMMANDS = new Set(["setup", "ask"]);
+const UNPACK_SAFE_SUBCOMMANDS = new Set(["setup", "ask", "review"]);
 
 // Matches a known ask flag token. Long form: --json / --stream / --model /
 // --resume (with or without = attached). Short form: -m / -r (only — no
 // other single-dash form is a valid ask flag).
 const ASK_KNOWN_FLAG = /^(?:--(?:json|stream|model|resume)(?:=.*)?|-[mr])$/;
+const REVIEW_KNOWN_FLAG = /^(?:--(?:json|model|base|scope)(?:=.*)?|-m)$/;
 
 function shouldUnpackBlob(sub, rest) {
   if (rest.length !== 1) return false;
@@ -233,6 +323,7 @@ function shouldUnpackBlob(sub, rest) {
   if (tokens.length === 0) return false;
   if (sub === "setup") return tokens.every((t) => t.startsWith("-"));
   if (sub === "ask") return ASK_KNOWN_FLAG.test(tokens[0]);
+  if (sub === "review") return REVIEW_KNOWN_FLAG.test(tokens[0]) || tokens.every((t) => !t.startsWith("-"));
   return false;
 }
 
@@ -249,6 +340,8 @@ async function main() {
       return runSetup(rest);
     case "ask":
       return runAsk(rest);
+    case "review":
+      return runReview(rest);
     case undefined:
     case "--help":
     case "-h":
