@@ -2,6 +2,21 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-20 [Claude Opus 4.7 — Phase 2 plan v4 after THIRD 3-way review]
+
+- **status**: done
+- **scope**: docs/superpowers/plans/2026-04-20-phase-2-ask-streaming.md
+- **summary**: Third 3-way review round. Both reviewers agreed v3 A7 was not fully closed (resume test could false-positive). Codex also flagged A2 silent session omission + A3 short-flag =form. Gemini flagged A2/A6 as partial (prompt-level wording is weak). Consolidated 7 v4 changes:
+  - **v4-1 (High, convergent)**: resume test now has positive + reverse + stability branches (bogus 00000000-… must be rejected or logged as WARN; sid must match a valid uuid in kimi.json).
+  - **v4-2 (Medium)**: footer always shows `session: <id|unknown>`; runAsk writes stderr warning when sessionId null. No more silent omission.
+  - **v4-3 (Medium)**: runAsk rejects short-form `-X=Y` positionals with a clear usage error — previously they leaked into the prompt.
+  - **v4-4 (Medium)**: ask.md MUST NOT prepend/append commentary (no "这是 Kimi 的回答：" intros). Disagreement note is the only allowed addition.
+  - **v4-5 (Medium)**: ask.md error suggestions are literal declarative templates; MUST NOT end with "?".
+  - **v4-6 (Low)**: no doc typo found; v3 already clean.
+  - **v4-7 (Low)**: KIMI_STATUS_TIMED_OUT = 124 has defensive comment about future kimi-cli collision.
+  - **Phase 3 Task 3.0** explicitly recorded in audit section: kimi-result-handling SKILL.md will be split into `references/<command>-render.md` modules when review joins (stops G6 snowballing).
+- **next**: subagent-driven execution of plan-2-ask-streaming v4. After 3 review rounds the plan is stable enough to execute; further rounds would be diminishing returns.
+
 ## 2026-04-20 [Claude Opus 4.7 — Phase 1 live-install verified]
 
 - **status**: done
