@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { runCommand, binaryAvailable } from "./process.mjs";
 
 // ── Constants ──────────────────────────────────────────────
@@ -280,6 +282,15 @@ export function readSessionIdFromKimiJson(workDirPath) {
   }
 }
 
+// Count think blocks across all assistant events. Gemini G4: surfaced as
+// a UX signal ("Kimi thought for N blocks") without leaking raw reasoning.
+function countThinkBlocks(events) {
+  return events
+    .filter((e) => e.role === "assistant")
+    .flatMap((e) => (e.content || []).filter((b) => b && b.type === "think"))
+    .length;
+}
+
 // ── Sync call (spec §3.1, §3.5) ────────────────────────────
 
 // Build argv for `kimi -p ... --print --output-format stream-json ...`.
@@ -395,10 +406,7 @@ export function callKimi({
       status: KIMI_EXIT.OK,
       rawStdout: (result.stdout || "").slice(0, 2000),
       events,
-      thinkBlocks: events
-        .filter((e) => e.role === "assistant")
-        .flatMap((e) => (e.content || []).filter((b) => b && b.type === "think"))
-        .length,
+      thinkBlocks: countThinkBlocks(events),
     };
   }
 
@@ -406,21 +414,159 @@ export function callKimi({
     parseSessionIdFromStderr(result.stderr) ||
     readSessionIdFromKimiJson(cwd || process.cwd());
 
-  // Gemini G4: count think blocks so Claude can surface "Kimi thought for N
-  // blocks" as a quality signal without surfacing the raw reasoning.
-  const thinkBlocks = events
-    .filter((e) => e.role === "assistant")
-    .flatMap((e) => (e.content || []).filter((b) => b && b.type === "think"))
-    .length;
-
   return {
     ok: true,
     response: assistantText,
     sessionId,
     events,
     toolEvents,
-    thinkBlocks,
+    thinkBlocks: countThinkBlocks(events),
   };
+}
+
+// ── Streaming call (spec §3.3) ─────────────────────────────
+//
+// Emit one `onEvent(event)` per parsed JSONL line as it arrives. Returns a
+// Promise resolving to the same shape as callKimi. Multi-byte safe via
+// StringDecoder. Handles last-line-no-newline by flushing decoder on close.
+export function callKimiStreaming({
+  prompt,
+  model,
+  cwd,
+  timeout = DEFAULT_TIMEOUT_MS,
+  extraArgs = [],
+  resumeSessionId = null,
+  onEvent = () => {},
+}) {
+  // Pre-flight model check, same as callKimi (codex C2).
+  if (model) {
+    const configured = readKimiConfiguredModels();
+    if (configured.length > 0 && !configured.includes(model)) {
+      return Promise.resolve(errorResult({
+        status: KIMI_EXIT.CONFIG_ERROR,
+        error: `Model '${model}' is not configured in ~/.kimi/config.toml. Available: ${configured.join(", ")}`,
+        events: [],
+      }));
+    }
+  }
+
+  const useStdinForPrompt = (prompt || "").length >= LARGE_PROMPT_THRESHOLD_BYTES;
+  const args = buildKimiArgs({ prompt, model, useStdinForPrompt, resumeSessionId, extraArgs });
+
+  return new Promise((resolve) => {
+    const child = spawn(KIMI_BIN, args, {
+      cwd,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env },
+    });
+
+    const decoder = new StringDecoder("utf8");
+    let lineBuffer = "";
+    let stderrBuf = "";
+    const events = [];
+    const toolEvents = [];
+    const textParts = [];
+    let timedOut = false;
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill("SIGTERM"); } catch { /* ignore */ }
+    }, timeout);
+
+    if (useStdinForPrompt) child.stdin.write(prompt);
+    child.stdin.end();
+
+    function processLine(raw) {
+      const ev = parseKimiEventLine(raw);
+      if (!ev) return;
+      events.push(ev);
+      if (ev.role === "assistant") {
+        const t = extractAssistantText(ev);
+        if (t) textParts.push(t);
+      } else if (ev.role === "tool") {
+        toolEvents.push(ev);
+      }
+      try { onEvent(ev); } catch { /* callback errors don't break us */ }
+    }
+
+    child.stdout.on("data", (chunk) => {
+      lineBuffer += decoder.write(chunk);
+      let i;
+      while ((i = lineBuffer.indexOf("\n")) >= 0) {
+        const line = lineBuffer.slice(0, i);
+        lineBuffer = lineBuffer.slice(i + 1);
+        processLine(line);
+      }
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderrBuf += chunk.toString();
+    });
+
+    child.on("close", (status) => {
+      clearTimeout(timer);
+      lineBuffer += decoder.end();
+      if (lineBuffer.trim()) {
+        processLine(lineBuffer);
+        lineBuffer = "";
+      }
+
+      // Unified timeout contract (codex C6): same shape as other errors.
+      if (timedOut) {
+        resolve(errorResult({
+          status: KIMI_STATUS_TIMED_OUT,
+          error: `kimi timed out after ${Math.round(timeout / 1000)}s`,
+          events,
+          textParts,
+        }));
+        return;
+      }
+
+      if (status !== 0) {
+        resolve(errorResult({
+          status,
+          error: describeKimiExit({ status, stdout: textParts.join(""), stderr: stderrBuf }),
+          events,
+          textParts,
+        }));
+        return;
+      }
+
+      // No-visible-text guard mirrored in streaming path (same fix as sync).
+      // Catches both 0-events and think-only cases.
+      const streamedText = textParts.join("");
+      if (!streamedText) {
+        resolve({
+          ok: false,
+          error: events.length === 0
+            ? "kimi exited 0 but produced no stream-json events"
+            : "kimi produced no visible text (think-only response)",
+          status: KIMI_EXIT.OK,
+          events,
+          thinkBlocks: countThinkBlocks(events),
+        });
+        return;
+      }
+
+      const sessionId =
+        parseSessionIdFromStderr(stderrBuf) ||
+        readSessionIdFromKimiJson(cwd || process.cwd());
+
+      resolve({
+        ok: true,
+        response: textParts.join(""),
+        sessionId,
+        events,
+        toolEvents,
+        thinkBlocks: countThinkBlocks(events),
+      });
+    });
+
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolve(errorResult({ error: err.message, events, textParts }));
+    });
+  });
 }
 
 // ── Exports for Phase 2+ to consume ────────────────────────
