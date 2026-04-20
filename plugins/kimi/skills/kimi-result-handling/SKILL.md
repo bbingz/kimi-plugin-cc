@@ -48,25 +48,7 @@ Command files (`plugins/kimi/commands/<name>.md`) remain the authoritative sourc
 
 Kimi often replies in the same language as the prompt. If the user asked in Chinese, do NOT translate the response to English unless they explicitly asked. Quote verbatim. **Do NOT offer translation as an unprompted follow-up** — `/kimi:ask` specifically forbids appending any commentary. If the user later asks "翻译一下" or similar, translate then.
 
-## Think blocks (future `--show-thinking` flag, not v0.1)
-
-If a future version surfaces `type: "think"` blocks, render them in a collapsed markdown details block — never inline with the main answer:
-
-```
-<details>
-<summary>Kimi's reasoning</summary>
-
-<think content>
-
-</details>
-
-<visible text response>
-```
-
-The footer's `thinkBlocks: N` count (emitted by the companion for /kimi:ask) is a quality signal only — do not fabricate the contents or promise a way to see them while the surface remains v0.1.
-
 ## What still needs Phase 5 work
 
 - Review-findings rendering (severity-sorted, deep-linked file references) — waits for `/kimi:review` (Phase 3).
 - Disagreement-phrasing library across review vs ask contexts.
-- Split this skill into `references/<command>-render.md` modules (gemini G6) when Phase 3 adds `/kimi:review`.
