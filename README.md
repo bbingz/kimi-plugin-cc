@@ -15,7 +15,12 @@ Claude Code plugin integrating Moonshot Kimi CLI.
 Claude Code `plugins install` takes a plugin name from a **registered marketplace**, not a filesystem path. Register this repo as a local marketplace first, then install by name:
 
 ```bash
-# 1) Register this repo as a marketplace (one-time per machine; run from the repo root or pass the repo path)
+# 0) cd into the repo root FIRST — the next command uses $PWD.
+#    If you skip this step, `$PWD` expands to whatever directory you're
+#    currently in and you'll register the wrong path.
+cd /path/to/kimi-plugin-cc
+
+# 1) Register this repo as a marketplace (one-time per machine)
 claude plugins marketplace add "$PWD"
 
 # 2) Install the kimi plugin from it

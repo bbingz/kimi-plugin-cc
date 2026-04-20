@@ -123,6 +123,14 @@ export function validateReviewOutput(data) {
             errors.push(`findings[${i}].${k} must be integer >= 1, got ${JSON.stringify(f[k])}`);
           }
         }
+        // Reverse-range guard (codex 4-way-review L4): `line_end >=
+        // line_start` is a semantic invariant the prompt implies but the
+        // schema doesn't spell out; without the check, `{start: 42, end: 10}`
+        // passes validation and downstream renderers show "42-10" which
+        // confuses users.
+        if (Number.isInteger(f.line_start) && Number.isInteger(f.line_end) && f.line_end < f.line_start) {
+          errors.push(`findings[${i}].line_end (${f.line_end}) must be >= line_start (${f.line_start})`);
+        }
       });
     }
   }
@@ -137,10 +145,18 @@ export function validateReviewOutput(data) {
 export function reviewError({
   error, rawText = null, parseError = null, firstRawText = null,
   transportError = null, truncated, retry_used, sessionId = null,
+  status = null,
 }) {
   return {
     ok: false,
     error,
+    // Top-level `status` mirrors the `errorResult` shape in kimi.mjs so
+    // downstream exit-code mappers see a consistent field regardless of
+    // whether the failure originated in the transport layer or the review
+    // pipeline (qwen 4-way-review M2). Non-transport failures default to
+    // null; transport failures propagate status via `transportError.status`
+    // AND copy to top-level `status` for direct consumption.
+    status: status ?? (transportError?.status ?? null),
     rawText,
     parseError,
     firstRawText,

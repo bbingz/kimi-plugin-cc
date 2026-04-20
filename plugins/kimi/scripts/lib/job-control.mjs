@@ -3,7 +3,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import process from "node:process";
 
-import { callKimiStreaming, statusFromSignal } from "./kimi.mjs";
+import { callKimiStreaming, statusFromSignal, KIMI_STATUS_TIMED_OUT } from "./kimi.mjs";
 import {
   appendTimingHistory,
   ensureStateDir,
@@ -124,10 +124,18 @@ export function runWorker(jobId, workspaceRoot, companionScript, args) {
   const now = new Date().toISOString();
   // Map signal→status so SIGINT/SIGTERM kills surface 130/143 in the job
   // record, matching the foreground signal-propagation contract (codex
-  // Phase-5-v0.1-review H1). result.status can be null when the child
-  // was signal-killed; without this mapping, exit becomes 1 and background
-  // consumers can't distinguish "failed" from "cancelled by signal".
-  const exitCode = result.status ?? statusFromSignal(result.signal) ?? 1;
+  // Phase-5-v0.1-review H1). Disambiguate the local-timeout case from
+  // an external SIGTERM (codex 4-way-review M1): spawnSync's `timeout`
+  // option also kills the child with SIGTERM on expiry, so both paths
+  // otherwise collapse to 143. Node sets `error.code === "ETIMEDOUT"`
+  // on the result object when the timeout fired; route that to 124
+  // (GNU `timeout`-convention) so consumers can distinguish.
+  let exitCode;
+  if (result.error && result.error.code === "ETIMEDOUT") {
+    exitCode = KIMI_STATUS_TIMED_OUT;
+  } else {
+    exitCode = result.status ?? statusFromSignal(result.signal) ?? 1;
+  }
   const status = exitCode === 0 ? "completed" : "failed";
   const phase = exitCode === 0 ? "done" : "failed";
 

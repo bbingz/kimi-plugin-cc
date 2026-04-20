@@ -90,21 +90,34 @@ export function loadState(workspaceRoot) {
   return defaultState();
 }
 
-// Atomic write: write to a same-directory temp file, fsync, rename over the
+// Atomic write: write to a same-directory temp file, then rename over the
 // target. POSIX rename is atomic within a filesystem, so concurrent writers
 // can't see a torn file. Without this, two background-job completions could
 // interleave their writes and one state.json ends up as a hybrid of both
 // (codex Phase-5-v0.1-review C1).
+//
+// Use `fs.writeFileSync` (not `fs.writeSync`) so short-writes are handled
+// internally — a raw `writeSync` is allowed to write fewer bytes than
+// requested on some filesystems, leaving a truncated JSON that a later
+// `loadState()` silently falls back to `defaultState()` on (codex 4-way-
+// review M2). No explicit `fsync` — crash-durability is worth ~5–10ms per
+// save (qwen L3) and we trade it for speed; an atomic rename is enough to
+// prevent torn reads, which is the actual concurrency concern.
+//
+// On failure between openSync and renameSync, we clean up the temp file
+// (qwen-style / codex L1). On Windows + NFS the rename semantics are
+// weaker than POSIX; documented in lessons.md Appendix / §H "Path
+// storage normalization" — single-machine-local-FS is the v0.1 supported
+// target (qwen H1).
 function atomicWriteFileSync(targetPath, data) {
   const tmp = `${targetPath}.tmp-${process.pid}-${Date.now().toString(36)}`;
-  const fd = fs.openSync(tmp, "w");
   try {
-    fs.writeSync(fd, data);
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
+    fs.writeFileSync(tmp, data);
+    fs.renameSync(tmp, targetPath);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { /* best-effort cleanup */ }
+    throw e;
   }
-  fs.renameSync(tmp, targetPath);
 }
 
 export function saveState(workspaceRoot, state) {

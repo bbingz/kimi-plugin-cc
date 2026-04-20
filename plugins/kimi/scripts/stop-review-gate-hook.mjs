@@ -134,4 +134,15 @@ function main() {
   logNote(runningNote);
 }
 
-main();
+// Top-level try/catch (qwen 4-way-review H2). The stop-review gate runs
+// inside a 15-min hook budget; silent failure would leave Claude blocked
+// with no diagnostic. On fatal error, emit to stderr + exit 1 so the
+// hook framework logs something actionable.
+try {
+  main();
+} catch (err) {
+  process.stderr.write(
+    `[kimi stop-review-gate-hook] fatal: ${err && err.message ? err.message : String(err)}\n`
+  );
+  process.exit(1);
+}

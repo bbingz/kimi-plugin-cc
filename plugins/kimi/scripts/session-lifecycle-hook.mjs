@@ -107,4 +107,15 @@ function main() {
   }
 }
 
-main();
+// Top-level try/catch (qwen 4-way-review H2): if readHookInput throws on
+// malformed stdin, or any inner handler throws unexpectedly, Claude Code
+// would otherwise see a silent non-zero without a diagnostic. Emit a
+// structured error to stderr and exit 1 so the user has something to grep.
+try {
+  main();
+} catch (err) {
+  process.stderr.write(
+    `[kimi session-lifecycle-hook] fatal: ${err && err.message ? err.message : String(err)}\n`
+  );
+  process.exit(1);
+}

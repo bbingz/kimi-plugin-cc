@@ -705,8 +705,12 @@ export function buildReviewPrompt({ context, focus, schemaPath, retryHint = null
   // Focus wording (gemini v1-review G-M2): "Focus area: X" was ambiguous
   // between weight-toward vs limit-to. "Pay particular attention" clarifies
   // it's a weight cue while preserving room to flag out-of-focus criticals.
+  // Kimi-4way-review bug: previous version had `\nPay particular...\n`, which
+  // collapsed summary+focus into one block without a blank line separator and
+  // caused kimi's attention to treat the focus cue as a summary continuation.
+  // Fix: lead with `\n\n` so summary and focus cue are visually distinct.
   const focusLine = focus
-    ? `\nPay particular attention to: ${focus}. You may still report critical issues outside this area.\n`
+    ? `\n\nPay particular attention to: ${focus}. You may still report critical issues outside this area.`
     : "";
   const retryBlock = retryHint
     ? `\n\n[IMPORTANT] Your previous response failed JSON parsing or schema validation. The error was: ${retryHint}\nReturn ONLY the JSON object — no prose, no markdown fence, no commentary before or after. Nothing but the JSON. Use the EXACT English severity strings (critical/high/medium/low) — do NOT translate them.\n`

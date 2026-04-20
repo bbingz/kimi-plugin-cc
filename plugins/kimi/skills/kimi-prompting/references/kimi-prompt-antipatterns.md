@@ -58,6 +58,17 @@ is Chinese, write the `<output_contract>` in Chinese too. The content of
 the contract (strict JSON rules, schema, enum lists) can stay English
 since JSON keywords are language-neutral.
 
+**Exception — mixed Chinese narrative + English code/schema** (kimi
+4-way-review M1, flagged by Kimi-as-reviewer): the most common
+`/kimi:review` case is "Chinese user asks a question about English
+diff" — full-Chinese meta is WRONG here. Keep `STRICT OUTPUT RULES`
+in English (enum values, schema, "no markdown fence"). Translating
+those to Chinese puts extra pressure on Kimi's already-weak English
+enum adherence (see §2) and tends to push `"severity": "critical"`
+toward `"severity": "严重"`. Rule of thumb: meta-language follows
+the majority-content language — if `REVIEW_INPUT` is English code,
+meta stays English even when the user chat was Chinese.
+
 ## 6. Asking Kimi to "think harder" without a thinking block
 
 **Observed:** Prompts like "think carefully" or "reason step by step" in

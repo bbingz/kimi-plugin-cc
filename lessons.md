@@ -303,6 +303,8 @@ the checklist" looks like.
 
 ### F answers (LLM-behavior)
 
+> **⚠ Calibration note** (kimi 4-way-review H1, self-reported by Kimi-as-reviewer): The rate percentages below are **qualitative bands from Phase 2–3 dry runs with n ≈ 10–15 samples** (not calibrated benchmarks from a test suite). Treat as directional signals, not regression baselines; if a future phase sees "30% markdown fence rate" that is within noise, not a degradation. When sibling plugins run their own Phase-0 probes they should re-measure against their own provider + model + prompt pair and record fresh numbers.
+
 | Question | Kimi v1-128k answer |
 |---|---|
 | JSON compliance | Weak. Markdown fence ~25% of raw runs; `好的，这是 JSON：` preamble ~15%; severity enum translation to Chinese ~35% without explicit ban. Strict negative rules + schema validator catch all three. |

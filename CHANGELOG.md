@@ -2,6 +2,26 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-21 [Claude Opus 4.7 — 4-way review polish (phase-5-post-review-2)]
+
+- **status**: done
+- **scope**: plugins/kimi/scripts/{lib/{kimi.mjs,review.mjs,state.mjs,job-control.mjs}, session-lifecycle-hook.mjs, stop-review-gate-hook.mjs}, plugins/kimi/prompts/adversarial-review.md, plugins/kimi/skills/{kimi-result-handling/SKILL.md, kimi-prompting/references/kimi-prompt-antipatterns.md}, README.md, lessons.md, CHANGELOG.md
+- **summary**: 4-way review (codex + gemini + kimi + qwen, parallel) dispatched post install — vote 3-yes / 1-no (gemini). Meta-result: **kimi as reviewer produced substantive, calibrated findings including self-critique of its own Appendix-I rates, proving the plugin works end-to-end.** 11 accepted findings integrated:
+  - **kimi bug (`buildReviewPrompt` focusLine)**: previous `\nfocus\n` collapsed summary+focus without blank-line separator; kimi attention was treating focus as summary continuation. Fix: `\n\nfocus` for symmetric spacing.
+  - **kimi M1 + gemini H2 (adversarial stance scope)**: anti-dialectical rules were applied globally; now scoped — `summary` banned balanced phrasing, `finding.body` allowed to include comparative evidence ("This file elsewhere uses X, making Y a regression"). Prompt section rewritten with explicit scope headers.
+  - **kimi M3 (auto-execute policy vs enforcement)**: `kimi-result-handling/SKILL.md` §3 expanded with note clarifying "Never auto-execute" is presentation-layer policy, not sandbox; companion does not parse imperatives out of kimi output.
+  - **kimi M1 (antipatterns §5 exception)**: added mixed Chinese-narrative + English-code exception to the meta-language-matching rule. Keep STRICT OUTPUT RULES in English regardless of chat language — Chinese meta pushes kimi toward translating English enum values.
+  - **kimi H1 (Appendix I calibration footnote)**: added warning that 25%/15%/35% JSON-compliance rates are Phase 2-3 qualitative bands (n≈10-15), not calibrated benchmarks. Sibling plugins should re-measure.
+  - **qwen H2 (hook scripts top-level try/catch)**: both `session-lifecycle-hook.mjs` and `stop-review-gate-hook.mjs` wrap `main()` in try/catch → structured stderr error + exit 1 on throw. Claude Code's hook framework now sees actionable diagnostics instead of silent non-zero.
+  - **qwen M2 (reviewError `status` field)**: added top-level `status` to the `reviewError` shape, defaulting to `transportError?.status ?? null`. Consumers can now rely on `result.status` uniformly regardless of failure origin (transport vs parse vs schema).
+  - **codex M1 (`runWorker` ETIMEDOUT disambig)**: background worker now checks `result.error?.code === "ETIMEDOUT"` and routes to 124 (GNU timeout convention) instead of collapsing to 143 SIGTERM. Local-timeout vs external-cancel distinguishable in the job record.
+  - **codex M2 (atomicWriteFileSync short-write)**: replaced manual `openSync/writeSync/fsync/closeSync` pair with `fs.writeFileSync` (handles short-writes internally) + `renameSync`. Dropped `fsync` per qwen L3 (~5-10ms saved per save; atomic rename is sufficient for the torn-read concern). Added temp-file cleanup on failure.
+  - **codex L4 (validateReviewOutput reverse-range guard)**: `line_end >= line_start` now enforced. Reverse ranges like `{start: 42, end: 10}` previously passed validation and confused renderers.
+  - **gemini C1 (README `$PWD` trap)**: install instructions now lead with an explicit `cd /path/to/kimi-plugin-cc` step + inline warning. `$PWD` still used but the footgun is surfaced.
+- **Non-accepted / deferred to v0.2**: gemini H3 + qwen M1 convergent ask to parameterize `MAX_REVIEW_DIFF_BYTES` + TRUNCATION/RETRY_NOTICE through `runReviewPipeline` — right move, but best done when minimax-plugin-cc actually needs a different budget (avoid premature over-engineering). kimi M2 `no_changes` whitespace-only path — deferred as edge case, LLM's `approve` on trivial whitespace diff is defensible. qwen H1 Windows + NFS portability — single-machine-macOS v0.1 target; document-only and already noted in lessons.md §H.
+- **Verification**: T5 PASS (verdict=needs-attention, 4 findings), T9 PASS (verdict=needs-attention, 4 findings, red-team regex matched). Smoke tested reviewError.status (null default + transportError propagation) and validateReviewOutput line_end reverse-range rejection — both passing.
+- **next**: tag `phase-5-post-review-2`. v0.1 now truly frozen for sibling kickoff — minimax-plugin-cc can fork `phase-1-template.md` cleanly.
+
 ## 2026-04-21 [Claude Opus 4.7 — v0.1 comprehensive 3-way review integration]
 
 - **status**: done

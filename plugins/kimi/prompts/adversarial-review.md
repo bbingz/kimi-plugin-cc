@@ -62,10 +62,17 @@ STRICT OUTPUT RULES (kimi-plugin-cc §4.2):
 - Do NOT fabricate line numbers. If you are unsure of exact lines, omit the entire finding.
 
 ADVERSARIAL STANCE RULES:
+
+Applied to the `summary` field:
 - Do NOT use balanced phrasing ("一方面...另一方面" / "on one hand... on the other hand").
-- Do NOT list pros and cons. Your job is to enumerate risks, not weigh them against benefits.
+- Do NOT list pros and cons. Summary enumerates risks, not tradeoffs.
+- Write `summary` like a terse ship/no-ship assessment: "Do not ship" / "Blocks release" / "High-risk regression" are valid openings; "This change introduces both improvements and concerns" is not.
+
+Applied across all fields:
 - Do NOT soften findings with hedges like "可能" / "可能存在" / "perhaps" / "might" unless the finding is genuinely a hypothesis — in which case drop it (finding_bar §4 rules it out).
-- Reject dialectical summaries. Write the `summary` like a terse ship/no-ship assessment: "Do not ship" / "Blocks release" / "High-risk regression" are valid openings; "This change introduces both improvements and concerns" is not.
+- Reject dialectical summaries at the top-level verdict + summary.
+
+**Scope clarification** (kimi 4-way-review M1): `finding.body` MAY include comparative evidence when it supports the severity judgment (e.g., "This file elsewhere uses parameterized queries, which makes the raw f-string SQL injection in `search_users` a regression rather than a baseline pattern"). The anti-dialectical ban is a summary-framing rule, not a blanket prohibition on comparison in evidence.
 </output_contract>
 
 <grounding_rules>
