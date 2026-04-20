@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import { fileURLToPath } from "node:url";
+import { loadPromptTemplate, interpolateTemplate } from "./prompts.mjs";
 import { runCommand, binaryAvailable } from "./process.mjs";
 import {
   MAX_REVIEW_DIFF_BYTES,
@@ -31,6 +33,7 @@ const KIMI_BIN = process.env.KIMI_CLI_BIN || "kimi";
 const PING_MAX_STEPS = 1;
 const SESSION_ID_STDERR_REGEX = /kimi -r ([0-9a-f-]{36})/;
 const LARGE_PROMPT_THRESHOLD_BYTES = 100_000;
+const KIMI_PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 // ── Runtime sentinels (kimi-cli source-derived markers) ────
 // Per codex source-read. If kimi-cli updates, only this block changes.
@@ -621,11 +624,31 @@ export function callKimiStreaming({
   });
 }
 
-// ── Review prompt (spec §4.2; strong JSON constraint per kimi behavior) ──
+// ── Adversarial review prompt ──────────────────────────────
 //
-// Load the schema from plugins/kimi/schemas/review-output.schema.json at call
-// time (not module load) so schema edits during development don't require a
-// companion restart. Caller passes { context, focus, schemaPath }.
+// Loads prompts/adversarial-review.md (Task 5.3) and interpolates
+// TARGET_LABEL / USER_FOCUS / REVIEW_INPUT / REVIEW_SCHEMA. Same retry-hint
+// semantics as buildReviewPrompt: a terse error nudge appended at the end
+// so kimi corrects in place. TARGET_LABEL derives from the git context
+// (branch vs. working-tree); caller fills it in.
+export function buildAdversarialPrompt({ context, focus, schemaPath, retryHint = null }) {
+  const schema = fs.readFileSync(schemaPath, "utf8").trim();
+  const template = loadPromptTemplate(KIMI_PLUGIN_ROOT, "adversarial-review");
+  const base = interpolateTemplate(template, {
+    TARGET_LABEL: context.summary || "working tree changes",
+    USER_FOCUS: focus || "No extra focus provided.",
+    REVIEW_INPUT: context.content,
+    REVIEW_SCHEMA: schema,
+  });
+  if (!retryHint) return base;
+  // Retry hint lives outside the XML tags — the template is a fixed artifact,
+  // and kimi's correction attention is on the final paragraph regardless.
+  return `${base}
+
+[IMPORTANT] Your previous response failed JSON parsing or schema validation. The error was: ${retryHint}
+Return ONLY the JSON object — no prose, no markdown fence, no commentary before or after. Use the EXACT English severity strings (critical/high/medium/low).`;
+}
+
 export function buildReviewPrompt({ context, focus, schemaPath, retryHint = null }) {
   const schema = fs.readFileSync(schemaPath, "utf8").trim();
   // Focus wording (gemini v1-review G-M2): "Focus area: X" was ambiguous
@@ -686,6 +709,15 @@ export function callKimiReview({ context, focus, schemaPath, model, cwd, timeout
     callLLM: callKimi,
     context, focus, schemaPath, model, cwd, timeout, truncated,
     retryWarning: "Warning: kimi review response failed parse/validation; retrying once with error hint...\n",
+  });
+}
+
+export function callKimiAdversarialReview({ context, focus, schemaPath, model, cwd, timeout, truncated = false }) {
+  return runReviewPipeline({
+    buildPrompt: buildAdversarialPrompt,
+    callLLM: callKimi,
+    context, focus, schemaPath, model, cwd, timeout, truncated,
+    retryWarning: "Warning: kimi adversarial-review response failed parse/validation; retrying once with error hint...\n",
   });
 }
 
