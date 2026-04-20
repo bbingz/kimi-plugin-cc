@@ -2,6 +2,17 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-20 [Claude Opus 4.7 — Phase 2 plan v2 after 3-way review]
+
+- **status**: done
+- **scope**: docs/superpowers/plans/2026-04-20-phase-2-ask-streaming.md
+- **summary**: Integrated 11 findings (1 Critical + 5 High + 3 Medium + 2 defer) from plan-level 3-way review; 2 more left as verify-during-execution.
+  - Critical: gemini G1 empty-response guard (exit 0 + 0 events returns ok=false now); codex C3 ask-blob flag unpacking; codex C4 exit status propagation.
+  - High: codex C2 pre-flight model check via readKimiConfiguredModels; codex C5 block --stream from /kimi:ask; codex C6 unified errorResult shape; gemini G3 mandatory session footer in ask.md; gemini G5 large-prompt + resume-continuity tests.
+  - Medium: codex C7 runtime sentinels block in kimi.mjs (LLM_NOT_SET_MARKER / KIMI_EXIT / KIMI_STATUS_TIMED_OUT); gemini G4 thinkBlocks count; gemini G7 active-recovery paths in ask.md; codex C1 kept empirically (probe 03) with Task 2.7 re-verify at 150KB.
+  - Deferred: gemini G6 SKILL modularization to Phase 3 (with review skill); gemini G9 renderGeminiResult rename to Phase 5 polish.
+- **next**: subagent-driven execution of plan-2-ask-streaming.
+
 ## 2026-04-20 [Claude Opus 4.7 — Phase 1 skeleton]
 
 - **status**: done
