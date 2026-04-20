@@ -2,6 +2,13 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-20 [Claude Sonnet 4.6 — Task 2.7 follow-up: fix stdin path uses --input-format text]
+
+- **status**: done
+- **scope**: plugins/kimi/scripts/lib/kimi.mjs, doc/probe/probe-results.json
+- **summary**: Task 2.7 Step 5 failed with EPIPE because `-p ""` is rejected by kimi 1.36 ("Prompt cannot be empty"). Fixed `buildKimiArgs`: stdin mode now omits `-p` entirely and passes `--input-format text`; inline mode unchanged (uses `-p prompt` via `args.unshift`). Updated probe-results.json rationale + implications_for_phase_1. Verified: 150KB large-prompt test PASS, inline smoke PASS.
+- **next**: continue Task 2.7 remaining steps per Phase 2 v4 plan.
+
 ## 2026-04-20 [Claude Opus 4.7 — Phase 2 plan v4 after THIRD 3-way review]
 
 - **status**: done

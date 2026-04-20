@@ -56,7 +56,7 @@
     "inline_p_works_at_200k_macos": true,
     "recommended_strategy": "stdin",
     "threshold_bytes": 100000,
-    "rationale": "stdin avoids ARG_MAX across platforms; macOS handles up to 200k inline but Linux often has lower limits."
+    "rationale": "stdin avoids ARG_MAX across platforms; macOS handles up to 200k inline but Linux often has lower limits. stdin path requires --input-format text (NOT -p \"\"; kimi 1.36 rejects empty -p)."
   },
 
   "auth_ping": {
@@ -109,7 +109,7 @@
     "Assistant text extraction: iterate event.content[] where event.role=='assistant', filter block.type=='text', concat block.text. Skip unknown block types without error.",
     "Think-type blocks: default policy is DROP (do not surface to user). Exposing them is a UX choice for kimi-result-handling skill to decide; spec §3.3 content_aggregation section codifies this.",
     "No per-token streaming UX possible. Use a spinner during wait; render each completed message block as it arrives (paragraph-level increments for multi-line runs).",
-    "Large prompts (>100KB): pipe via stdin with -p \"\".",
+    "Large prompts (>100KB): pipe via stdin with --input-format text (omit -p entirely; kimi 1.36 rejects -p \"\").",
     "Secondary session-id fallback via kimi.json.work_dirs[cwd].last_session_id is viable; use when stderr is unavailable. Path comparison must use the SAME form on both sides (recommend realpath(cwd) consistently).",
     "Fresh-path invocation is safe: kimi upserts work_dirs entries automatically on first call; no pre-flight mkdir needed.",
     "Auth check uses --max-steps-per-turn 1 and pre-validates model name to avoid wasted sessions.",

@@ -293,17 +293,20 @@ function countThinkBlocks(events) {
 
 // ── Sync call (spec §3.1, §3.5) ────────────────────────────
 
-// Build argv for `kimi -p ... --print --output-format stream-json ...`.
-// Two prompt-delivery modes (probe 03 + codex C1 verify):
-//   - "inline"  → pass prompt as `-p "<text>"` (default for < threshold)
-//   - "stdin"   → pass `-p ""` and write the prompt on stdin
-//                 (probe 03 empirically works on kimi 1.36; codex read
-//                 the source and warned this might fail — we prefer the
-//                 empirical truth, but Phase 2 Task 2.7 validates this
-//                 path with a 200KB test; if it fails, flip to tmpfile
-//                 fallback via a follow-up commit)
+// Two prompt-delivery modes (verified empirically in Task 2.7 Step 5):
+//   - "inline"  → pass prompt as `-p "<text>"` (default for < LARGE_PROMPT_THRESHOLD_BYTES)
+//   - "stdin"   → pass `--input-format text` (NO `-p` flag) and write the prompt on stdin.
+//                 kimi 1.36 rejects `-p ""` with "Prompt cannot be empty", so we must
+//                 omit `-p` entirely in stdin mode. `--input-format text` activates the
+//                 stdin-read path per `kimi -h`: "Must be used with --print and the
+//                 input must be piped in via stdin."
 function buildKimiArgs({ prompt, model, useStdinForPrompt, resumeSessionId, extraArgs }) {
-  const args = ["-p", useStdinForPrompt ? "" : prompt, "--print", "--output-format", "stream-json"];
+  const args = ["--print", "--output-format", "stream-json"];
+  if (useStdinForPrompt) {
+    args.push("--input-format", "text");
+  } else {
+    args.unshift("-p", prompt);
+  }
   if (model) args.push("-m", model);
   if (resumeSessionId) args.push("-r", resumeSessionId);
   if (extraArgs?.length) args.push(...extraArgs);
