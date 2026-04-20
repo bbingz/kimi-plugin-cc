@@ -244,7 +244,17 @@ async function runReview(rawArgs) {
   const base = options.base || null;
   const context = collectReviewContext(cwd, { base, scope });
 
-  if (!context.content || !context.content.trim()) {
+  // collectReviewContext ALWAYS returns non-empty content — even with zero
+  // changes it emits a section skeleton ("## Git Status\n\n(none)\n##
+  // Staged Diff\n\n(none)\n..."). A naive `!content.trim()` check misses
+  // the empty-diff case and we waste a kimi call returning `verdict:
+  // "approve"` instead of the no_changes fast path. Strip the `(none)`
+  // sections before checking — Task 3.7 Step 3 caught this; gemini-plugin-cc
+  // has the same filter for the same reason.
+  const meaningfulContent = (context.content || "")
+    .replace(/## [^\n]+\n\n\(none\)\n*/g, "")
+    .trim();
+  if (!meaningfulContent) {
     process.stdout.write(JSON.stringify({
       ok: true,
       verdict: "no_changes",
