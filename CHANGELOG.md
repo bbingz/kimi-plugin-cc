@@ -2,6 +2,22 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-20 [Claude Opus 4.7 — Phase 5 final: v0.1 close]
+
+- **status**: done
+- **scope**: plugins/kimi/scripts/lib/{review.mjs (new), kimi.mjs}, plugins/kimi/scripts/kimi-companion.mjs, plugins/kimi/prompts/adversarial-review.md (new), plugins/kimi/commands/adversarial-review.md (new), plugins/kimi/skills/kimi-prompting/**, lessons.md (new), docs/superpowers/templates/phase-1-template.md (new), CHANGELOG.md
+- **summary**: Phase 5 closes v0.1. 10 tasks, 10 commits, post-execution 3-way review integrated.
+  - **`/kimi:adversarial-review`** live: red-team variant of `/kimi:review` with same output schema; prompt template at `plugins/kimi/prompts/adversarial-review.md` has STRICT OUTPUT RULES + ADVERSARIAL STANCE RULES (anti-dialectical constraints). T9 PASS empirically: on SQL-injection + fake-auth sample diff, summary opens literally "Do not ship." with 4 findings (vs balanced review's 2); regex red-team gate passes.
+  - **Review pipeline extracted** to `plugins/kimi/scripts/lib/review.mjs` (provider-agnostic): `MAX_REVIEW_DIFF_BYTES`, `TRUNCATION_NOTICE`, `RETRY_NOTICE`, `extractReviewJson`, `validateReviewOutput`, `reviewError`, `runReviewPipeline`. `RETRY_NOTICE` debranded ("The first response..." vs "Kimi's first...") per codex C2. `kimi.mjs` re-exports for back-compat; `callKimiReview` thin-wrapped to `runReviewPipeline`. Sibling plugins (minimax / qwen / doubao) import review.mjs verbatim.
+  - **`kimi-prompting` skill finalized**: SKILL.md (46L) + 3 references — `kimi-prompt-recipes.md` (140L: ask / review / adversarial / rescue / summarization), `kimi-prompt-antipatterns.md` (101L: 8 observed failures including `no_changes` hallucination per gemini G6), `prompt-blocks.md` (148L: reusable XML blocks).
+  - **`lessons.md`** (314L) at repo root per spec §6.2: sections A-H populated with Phase 0–5 reality (11 real pits documented, 2 checklists, cross-AI decision log, Kimi's own checklist answers appendix).
+  - **`phase-1-template.md`** (427L) at `docs/superpowers/templates/` per spec §6.2 "模板沉淀" (gemini G1): parameterized over 9 placeholders (`{{LLM}}`, `{{LLM_CAP}}`, `{{LLM_UPPER}}`, `{{LLM_CLI}}`, `{{LLM_CLI_INSTALL}}`, `{{LLM_SESSION_ENV}}`, `{{LLM_STATE_DIR}}`, `{{LLM_HOME_DIR}}`, `{{KIMI_REPO_ROOT}}`). Tasks T.1-T.6 compressed from kimi Phase-1 plan's 1500 lines of provider-specific content.
+  - **Pre-execution 3-way review integrated** (plan v1→v2): codex C1 (`shouldUnpackBlob` allowlist adversarial-review), C2 (RETRY_NOTICE debrand), gemini G1 (phase-1-template scope), G3 (adversarial anti-dialectical rules), G4 (T9 regex gate), G5 (lessons Appendix I), G6 (no_changes antipattern), G7 (T5 regate pre-tag). 8 findings all integrated to plan v2 at d9a702d.
+  - **Post-execution 3-way review** on HEAD 46d9767: codex 0C/0H/0M/1L; gemini 2C/2H/4M but most were stale plan-v1 findings already resolved (only H3 net-new). Integrated: codex L1 (review.mjs comment debrand to fully zero-kimi) + gemini H3 (commands/adversarial-review.md step 7 tightened with overlap heuristic). Polish commit 17ef0b6.
+  - **Re-gate PASS before tag**: T5 (balanced review) verdict=needs-attention, findings=2; T9 (adversarial) verdict=needs-attention, findings=4, red-team regex matched. Zero regression from refactor.
+- **v0.1 deliverables per spec §1.2**: 8 commands ✓ / 3 skills ✓ / 1 agent ✓ / 2 hooks ✓ / 1 schema ✓ / marketplace ✓ / independent git repo ✓ / lessons.md ✓ / CHANGELOG ✓ / phase-1-template ✓ — all green.
+- **next**: tag `phase-5-final`. v0.2 backlog: codex M1 cwd realpath, codex L1 shape unification, gemini G-C2 E2BIG >1MB, gemini G-M1 thinkBlocks `--show-thinking` flag, job-control.mjs adapter extraction (gemini G-C2). Pending sibling-plugin kickoff: minimax-plugin-cc using phase-1-template.md.
+
 ## 2026-04-20 [Codex — Phase 5 Task 5.1 review primitive extraction]
 
 - **status**: done
