@@ -248,57 +248,9 @@ Claude receives stderr with `Error: <msg>` and optional `Partial response:` bloc
 - Resume-mismatch: runAsk warns when `--resume <sid>` was requested but `result.sessionId !== sid` (gemini G-H1).
 ```
 
-- [ ] **Step 2: Write `references/review-render.md` (scaffold; real content lands in Task 3.6)**
+- [ ] **Step 2: Do NOT create `review-render.md` yet**
 
-Create `plugins/kimi/skills/kimi-result-handling/references/review-render.md`:
-
-```markdown
-# /kimi:review rendering rules
-
-Command file `plugins/kimi/commands/review.md` is the authoritative rendering contract for `/kimi:review`. This file documents the companion's JSON shape and Claude's rendering conventions.
-
-## Output channel contract
-
-`/kimi:review` ALWAYS runs in JSON mode (the command file fixes it). The companion writes to stdout:
-
-```json
-{
-  "ok": true,
-  "verdict": "approve" | "needs-attention",
-  "summary": "<one paragraph>",
-  "findings": [
-    {
-      "severity": "critical" | "high" | "medium" | "low",
-      "title": "...",
-      "body": "...",
-      "file": "...",
-      "line_start": N,
-      "line_end": N,
-      "confidence": 0.0-1.0,
-      "recommendation": "..."
-    }
-  ],
-  "next_steps": ["...", "..."],
-  "truncated": false,
-  "sessionId": "<uuid>",
-  "retry_used": false
-}
-```
-
-Empty-diff path returns `{ok: true, verdict: "no_changes", response: "No changes to review.", truncated: false}`.
-
-Failure path returns `{ok: false, error, rawText, parseError, retry_used: true|false}` (schema-wise: `findings`/`next_steps` may be absent).
-
-## Presentation to the user
-
-1. **Findings ordered by severity.** `critical > high > medium > low`. Secondary sort: alphabetical by `file` then `line_start`.
-2. **Present each finding verbatim** — title + body + recommendation. Include `file:line_start-line_end` as a clickable reference.
-3. **Show the verdict prominently** at the top (emoji optional; respect user style).
-4. **Truncated warning.** If `truncated: true`, say "Diff was larger than the review budget; some changes were NOT reviewed. Consider running per-path."
-5. **Do NOT auto-fix.** Ask the user which issues to address before touching any file.
-6. **If retry_used: true**, footer note: "Kimi's first response was malformed; the second attempt succeeded." No need to surface the malformed text.
-7. **Compare with `/review`** (Claude's own review) if it ran earlier this conversation: both / only-kimi / only-claude findings, three buckets.
-```
+Review-level rendering rules land in Task 3.6 (after the command contract is finalized). Addressing v1-review convergence (codex C-L1 + gemini G-H3): the v1 plan had a scaffold here that Task 3.6 immediately overwrote — wasted write. Task 3.2 only creates `ask-render.md` and slims `SKILL.md`. Task 3.6 creates `review-render.md` in one shot.
 
 - [ ] **Step 3: Slim down main `SKILL.md`**
 
@@ -320,7 +272,7 @@ Replace with:
 **Per-command rendering rules live in `references/<command>-render.md`.** Read the matching reference for the command you're rendering:
 
 - `/kimi:ask` → `references/ask-render.md`
-- `/kimi:review` → `references/review-render.md`
+- `/kimi:review` → `references/review-render.md` (lands in Task 3.6)
 - (others will be added as they land in later phases)
 
 Command files (`plugins/kimi/commands/<name>.md`) remain the authoritative source of truth — the reference docs capture background rationale and cross-command patterns that wouldn't fit in a command file's frontmatter-bounded budget. When a command file and a reference disagree, the command file wins.
@@ -336,7 +288,7 @@ ls plugins/kimi/skills/kimi-result-handling/references/
 wc -l plugins/kimi/skills/kimi-result-handling/SKILL.md plugins/kimi/skills/kimi-result-handling/references/*.md
 ```
 
-Expected: `references/` exists with 2 files. SKILL.md shrank (from ~93 to ~60 lines); each reference is ~40-50 lines.
+Expected: `references/` exists with 1 file (`ask-render.md`). SKILL.md shrank (from ~93 to ~60 lines). `review-render.md` is deliberately absent until Task 3.6 (v2 plan fix: avoid scaffold-then-overwrite waste).
 
 - [ ] **Step 5: Commit**
 
@@ -370,8 +322,8 @@ Write `plugins/kimi/schemas/review-output.schema.json` with EXACTLY this content
   "properties": {
     "verdict": {
       "type": "string",
-      "enum": ["approve", "needs-attention"],
-      "description": "Overall review verdict"
+      "enum": ["approve", "needs-attention", "no_changes"],
+      "description": "Overall review verdict. 'no_changes' is a companion-side fast path when the diff is empty — no kimi call is made. Kimi itself should never return 'no_changes'; validator rejects it unless the payload is the fast-path shape."
     },
     "summary": {
       "type": "string",
@@ -485,9 +437,14 @@ export const MAX_REVIEW_DIFF_BYTES = 150_000;
 // companion restart. Caller passes { context, focus, schemaPath }.
 export function buildReviewPrompt({ context, focus, schemaPath, retryHint = null }) {
   const schema = fs.readFileSync(schemaPath, "utf8").trim();
-  const focusLine = focus ? `\nFocus area: ${focus}\n` : "";
+  // Focus wording (gemini v1-review G-M2): "Focus area: X" was ambiguous
+  // between weight-toward vs limit-to. "Pay particular attention" clarifies
+  // it's a weight cue while preserving room to flag out-of-focus criticals.
+  const focusLine = focus
+    ? `\nPay particular attention to: ${focus}. You may still report critical issues outside this area.\n`
+    : "";
   const retryBlock = retryHint
-    ? `\n\n[IMPORTANT] Your previous response failed JSON parsing. The error was: ${retryHint}\nReturn ONLY the JSON object — no prose, no markdown fence, no commentary before or after. Nothing but the JSON.\n`
+    ? `\n\n[IMPORTANT] Your previous response failed JSON parsing or schema validation. The error was: ${retryHint}\nReturn ONLY the JSON object — no prose, no markdown fence, no commentary before or after. Nothing but the JSON. Use the EXACT English severity strings (critical/high/medium/low) — do NOT translate them.\n`
     : "";
 
   // Kimi constraint wording is tighter than gemini's (spec §4.2): kimi
@@ -505,9 +462,10 @@ STRICT OUTPUT RULES (kimi-plugin-cc §4.2):
 - No markdown code fence around it (no \`\`\`json ... \`\`\`).
 - No prose before (no "好的" / "Here is" / "This review").
 - No prose after (no "让我知道" / "Let me know").
-- All \`severity\` values must be one of: critical, high, medium, low.
-- \`verdict\` must be: approve or needs-attention.
-- Omit fields you cannot fill meaningfully — do NOT fabricate line numbers.${retryBlock}
+- \`severity\` MUST be one of the EXACT English strings: critical, high, medium, low. Do NOT translate these to Chinese (gemini v1-review G-M1; kimi priors may produce 严重/高/中/低 — those FAIL schema validation).
+- \`verdict\` MUST be: approve or needs-attention (never "no_changes" — that's a companion-side fast path for empty diffs).
+- For each finding you DO include, fill ALL required fields: severity, title, body, file, line_start, line_end, confidence, recommendation. Empty findings array is fine if the diff is clean; partially-filled findings are rejected.
+- Do NOT fabricate line numbers. If you are unsure of exact lines, omit the entire finding.${retryBlock}
 
 ${context.summary}${focusLine}
 
@@ -558,6 +516,15 @@ export function extractReviewJson(text) {
   }
   const jsonStr = candidate.slice(0, end + 1);
 
+  // Reject trailing JSON/structured content (codex v1-review C-M1): if kimi
+  // emits `{...}{...}` or `{...}[...]`, our walker would take the first object
+  // and ignore the rest. Treat that as "malformed — retry" so the second
+  // attempt has a chance at producing a single object.
+  const trailing = candidate.slice(end + 1).trim();
+  if (trailing.startsWith("{") || trailing.startsWith("[")) {
+    return { ok: false, error: "response contains multiple top-level JSON values", parseError: null, rawText: text };
+  }
+
   try {
     const data = JSON.parse(jsonStr);
     return { ok: true, data };
@@ -571,11 +538,16 @@ export function extractReviewJson(text) {
 
 ```js
 // Minimal hand-written validator for review-output.schema.json.
-// Verifies the 4 contract rules: required top-level keys; verdict enum;
-// each finding's severity enum; numeric bounds on confidence + line_*.
+// Enforces the 4 contract rules that T5 + prompt cover:
+//   (1) required top-level keys
+//   (2) verdict enum (approve | needs-attention) — NOT "no_changes";
+//       that's a companion-side fast-path shape, not kimi output
+//   (3) per-finding required fields (codex v1-review C-H1 fix)
+//   (4) severity enum + numeric bounds on confidence/line_start/line_end
 // Returns { ok: true } or { ok: false, errors: [string, ...] }.
 // Intentionally NOT a full JSON Schema implementation — we avoid the ajv
-// dep (zero-deps rule) and only check the rules T5 actually cares about.
+// dep (zero-deps rule) and only check the rules T5 + the command contract
+// actually care about.
 export function validateReviewOutput(data) {
   const errors = [];
   if (!data || typeof data !== "object" || Array.isArray(data)) {
@@ -585,19 +557,38 @@ export function validateReviewOutput(data) {
     if (!(k in data)) errors.push(`missing top-level field: ${k}`);
   }
   if ("verdict" in data && !["approve", "needs-attention"].includes(data.verdict)) {
-    errors.push(`verdict must be "approve" or "needs-attention", got ${JSON.stringify(data.verdict)}`);
+    errors.push(`verdict must be "approve" or "needs-attention" (no_changes is a companion-side shape, not a valid kimi verdict), got ${JSON.stringify(data.verdict)}`);
+  }
+  if ("summary" in data && (typeof data.summary !== "string" || data.summary.length === 0)) {
+    errors.push("summary must be a non-empty string");
   }
   if ("findings" in data) {
     if (!Array.isArray(data.findings)) {
       errors.push("findings must be an array");
     } else {
+      const requiredFindingKeys = [
+        "severity", "title", "body", "file",
+        "line_start", "line_end", "confidence", "recommendation",
+      ];
       data.findings.forEach((f, i) => {
-        if (!f || typeof f !== "object") {
+        if (!f || typeof f !== "object" || Array.isArray(f)) {
           errors.push(`findings[${i}] is not an object`);
           return;
         }
-        if (f.severity && !["critical", "high", "medium", "low"].includes(f.severity)) {
-          errors.push(`findings[${i}].severity must be critical|high|medium|low, got ${JSON.stringify(f.severity)}`);
+        // Per-finding required fields (codex C-H1): reject partial findings.
+        // The prompt explicitly tells kimi to omit entire findings it can't
+        // fill, so missing fields signal the LLM ignored instructions.
+        for (const k of requiredFindingKeys) {
+          if (!(k in f)) errors.push(`findings[${i}] missing required field: ${k}`);
+        }
+        if ("severity" in f && !["critical", "high", "medium", "low"].includes(f.severity)) {
+          errors.push(`findings[${i}].severity must be critical|high|medium|low (NOT translated to Chinese), got ${JSON.stringify(f.severity)}`);
+        }
+        if ("title" in f && (typeof f.title !== "string" || f.title.length === 0)) {
+          errors.push(`findings[${i}].title must be a non-empty string`);
+        }
+        if ("body" in f && (typeof f.body !== "string" || f.body.length === 0)) {
+          errors.push(`findings[${i}].body must be a non-empty string`);
         }
         if ("confidence" in f && (typeof f.confidence !== "number" || f.confidence < 0 || f.confidence > 1)) {
           errors.push(`findings[${i}].confidence must be number in [0,1], got ${JSON.stringify(f.confidence)}`);
@@ -620,20 +611,59 @@ export function validateReviewOutput(data) {
 - [ ] **Step 5: Append `callKimiReview` with 1-shot retry**
 
 ```js
+// Unified review-error shape (codex v1-review C-M2). ALL non-ok returns go
+// through this helper so review-render.md consumers see a consistent
+// { ok:false, error, rawText?, parseError?, firstRawText?, transportError?,
+//   truncated, retry_used, sessionId? } shape — never a raw errorResult
+// spread that leaks callKimi's transport fields (status/partialResponse/events).
+function reviewError({ error, rawText = null, parseError = null, firstRawText = null, transportError = null, truncated, retry_used, sessionId = null }) {
+  return {
+    ok: false,
+    error,
+    rawText,
+    parseError,
+    firstRawText,
+    transportError,
+    truncated,
+    retry_used,
+    sessionId,
+  };
+}
+
 // High-level wrapper: build prompt → callKimi → extract → validate → retry
 // once if parse or validation fails. Returns a shape extended with
 // { verdict, summary, findings, next_steps, truncated, retry_used, sessionId }
-// on success, or { ok: false, error, rawText, parseError, retry_used, sessionId? }
-// on failure.
+// on success, or the reviewError shape above on failure.
 //
 // Kimi's first-shot JSON compliance is historically uneven (spec §4.2 motivates
 // the retry). The retry prompt appends a terse error hint so kimi corrects in
-// place rather than re-reasoning from scratch.
+// place rather than re-reasoning from scratch. Reusing the same session via
+// `resumeSessionId` is a best-effort nudge; kimi 1.36's session store retains
+// prior messages so the model sees its own malformed output when correcting.
 export function callKimiReview({ context, focus, schemaPath, model, cwd, timeout, truncated = false }) {
-  const firstPrompt = buildReviewPrompt({ context, focus, schemaPath });
+  // Schema load try/catch (codex v1-review C-H2). Without this, a missing or
+  // malformed schema file would throw sync inside buildReviewPrompt and
+  // escape runReview as an uncaught exception. Surface as reviewError instead.
+  let firstPrompt;
+  try {
+    firstPrompt = buildReviewPrompt({ context, focus, schemaPath });
+  } catch (e) {
+    return reviewError({
+      error: `Failed to load review schema at ${schemaPath}: ${e.message}`,
+      truncated,
+      retry_used: false,
+    });
+  }
+
   const firstResult = callKimi({ prompt: firstPrompt, model, cwd, timeout });
   if (!firstResult.ok) {
-    return { ...firstResult, truncated, retry_used: false };
+    return reviewError({
+      error: firstResult.error || "kimi call failed",
+      transportError: { status: firstResult.status ?? null, partialResponse: firstResult.partialResponse ?? null },
+      truncated,
+      retry_used: false,
+      sessionId: firstResult.sessionId ?? null,
+    });
   }
 
   const firstExtracted = extractReviewJson(firstResult.response);
@@ -651,12 +681,29 @@ export function callKimiReview({ context, focus, schemaPath, model, cwd, timeout
     }
   }
 
+  // Operator breadcrumb (gemini v1-review G-L3). Goes to stderr so structured
+  // consumers keep getting clean JSON on stdout, and so background jobs log
+  // the retry rate over time for observability.
+  process.stderr.write("Warning: kimi review response failed parse/validation; retrying once with error hint...\n");
+
   // Retry once with error hint. Reuse the same session so kimi sees the prior
-  // exchange (improves in-place correction vs starting fresh).
+  // exchange (best-effort; if session didn't persist, the hint alone still
+  // steers correction).
   const retryHint = firstExtracted.ok
     ? `schema validation errors: ${firstValidation.errors.slice(0, 3).join("; ")}`
     : `parse failure (${firstExtracted.error}${firstExtracted.parseError ? ": " + firstExtracted.parseError : ""})`;
-  const retryPrompt = buildReviewPrompt({ context, focus, schemaPath, retryHint });
+  let retryPrompt;
+  try {
+    retryPrompt = buildReviewPrompt({ context, focus, schemaPath, retryHint });
+  } catch (e) {
+    return reviewError({
+      error: `Failed to rebuild review prompt for retry: ${e.message}`,
+      firstRawText: firstResult.response,
+      truncated,
+      retry_used: true,
+      sessionId: firstResult.sessionId ?? null,
+    });
+  }
   const retryResult = callKimi({
     prompt: retryPrompt,
     model,
@@ -665,33 +712,38 @@ export function callKimiReview({ context, focus, schemaPath, model, cwd, timeout
     resumeSessionId: firstResult.sessionId || null,
   });
   if (!retryResult.ok) {
-    return { ...retryResult, truncated, retry_used: true, firstRawText: firstResult.response };
+    return reviewError({
+      error: `Retry kimi call failed: ${retryResult.error}`,
+      transportError: { status: retryResult.status ?? null, partialResponse: retryResult.partialResponse ?? null },
+      firstRawText: firstResult.response,
+      truncated,
+      retry_used: true,
+      sessionId: retryResult.sessionId ?? null,
+    });
   }
 
   const retryExtracted = extractReviewJson(retryResult.response);
   if (!retryExtracted.ok) {
-    return {
-      ok: false,
+    return reviewError({
       error: `Review failed after 1 retry: ${retryExtracted.error}`,
       parseError: retryExtracted.parseError,
       rawText: retryResult.response,
       firstRawText: firstResult.response,
       truncated,
       retry_used: true,
-      sessionId: retryResult.sessionId,
-    };
+      sessionId: retryResult.sessionId ?? null,
+    });
   }
   const retryValidation = validateReviewOutput(retryExtracted.data);
   if (!retryValidation.ok) {
-    return {
-      ok: false,
+    return reviewError({
       error: `Review failed schema validation after 1 retry: ${retryValidation.errors.join("; ")}`,
       rawText: retryResult.response,
       firstRawText: firstResult.response,
       truncated,
       retry_used: true,
-      sessionId: retryResult.sessionId,
-    };
+      sessionId: retryResult.sessionId ?? null,
+    });
   }
 
   return {
@@ -866,14 +918,27 @@ async function runReview(rawArgs) {
   const focus = positionals.join(" ").trim() || null;
   const schemaPath = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
 
-  const result = callKimiReview({
-    context,
-    focus,
-    schemaPath,
-    model: options.model || null,
-    cwd,
-    truncated,
-  });
+  // Defensive wrapper (codex v1-review C-H2): callKimiReview already catches
+  // schema-load/prompt-rebuild via its own try/catch, but any other unexpected
+  // throw (fs race, OOM) must NOT escape as an uncaught exception.
+  let result;
+  try {
+    result = callKimiReview({
+      context,
+      focus,
+      schemaPath,
+      model: options.model || null,
+      cwd,
+      truncated,
+    });
+  } catch (e) {
+    result = {
+      ok: false,
+      error: `Unexpected error during review: ${e.message}`,
+      truncated,
+      retry_used: false,
+    };
+  }
 
   process.stdout.write(JSON.stringify(result, null, 2) + "\n");
 
@@ -1020,17 +1085,17 @@ The companion always emits JSON to stdout matching `plugins/kimi/schemas/review-
 **If `ok === false`**: show `error`, `rawText` (if present, clipped to 500 chars), and note whether a retry was used. Do NOT auto-retry — the companion already tried once. Suggest running `/kimi:review --scope staged` or reducing diff size.
 
 **If `ok === true` and `findings` is non-empty:**
-1. Sort findings by severity (`critical > high > medium > low`), then by `file` (alphabetical), then by `line_start` (ascending).
+1. **If `truncated === true`, warn PROMINENTLY at the top BEFORE verdict/findings**: "⚠️ Diff exceeded the review budget; only the first 150 KB was reviewed. Findings below are INCOMPLETE. Consider narrowing scope (`--scope staged`) or running per-path." (gemini v1-review G-M3: users miss the warning when it's buried below findings.)
 2. Present the `verdict` and `summary` prominently.
-3. For each finding, show:
+3. Sort findings by severity (`critical > high > medium > low`), then by `file` (alphabetical), then by `line_start` (ascending).
+4. For each finding, show:
    - Severity badge (e.g. 🔴 critical, 🟠 high, 🟡 medium, 🔵 low — or plain text if the user dislikes emoji).
    - Title.
    - `file:line_start` (or `file:line_start-line_end` if the range spans).
    - Body verbatim.
    - Recommendation.
-4. List `next_steps`.
-5. If `truncated === true`: warn "Some changes were NOT reviewed — diff exceeded the review budget. Consider narrowing scope (`--scope staged`) or running per-path."
-6. If `retry_used === true`: append one discreet line: "(Kimi's first response was malformed; the retry succeeded.)"
+5. List `next_steps`.
+6. If `retry_used === true`: append one discreet line at the END: "(Kimi's first response was malformed; the retry succeeded.)"
 7. If Claude's own `/review` already ran earlier this conversation, compare findings: both-found, only-kimi, only-claude buckets.
 
 **Do NOT auto-fix any issues.** Ask the user which items to address. One question at a time if multiple clusters.
@@ -1043,75 +1108,52 @@ The companion always emits JSON to stdout matching `plugins/kimi/schemas/review-
 - `[focus ...]` — optional focus keywords appended to the prompt (e.g. `auth middleware`)
 ```
 
-- [ ] **Step 2: Replace the scaffold `references/review-render.md` from Task 3.2 with the fuller version**
+- [ ] **Step 2: Create `references/review-render.md` (background rationale only)**
 
-The file exists from Task 3.2 Step 2 but was a scaffold. Overwrite with:
+The file does NOT exist yet — Task 3.2 Step 2 deliberately skipped it (v2 plan fix: avoid the v1 scaffold-then-overwrite waste that codex C-L1 + gemini G-H3 flagged, and avoid duplicating the JSON shape + 7-step rules between command.md and the reference).
+
+Create `plugins/kimi/skills/kimi-result-handling/references/review-render.md` with content that holds ONLY the rationale — all concrete rules live in `commands/review.md`:
 
 ```markdown
-# /kimi:review rendering rules
+# /kimi:review rendering rationale
 
-Command file `plugins/kimi/commands/review.md` is the authoritative rendering contract. This reference captures background rationale that wouldn't fit in a command file.
-
-## Output channel contract
-
-`/kimi:review` ALWAYS emits JSON. The companion's stdout shape:
-
-```json
-{
-  "ok": true,
-  "verdict": "approve" | "needs-attention",
-  "summary": "<one paragraph>",
-  "findings": [
-    {
-      "severity": "critical" | "high" | "medium" | "low",
-      "title": "...",
-      "body": "...",
-      "file": "path/relative/to/repo",
-      "line_start": N,
-      "line_end": N,
-      "confidence": 0.0-1.0,
-      "recommendation": "..."
-    }
-  ],
-  "next_steps": ["..."],
-  "truncated": false,
-  "sessionId": "<uuid>",
-  "retry_used": false
-}
-```
-
-Special non-findings shapes:
-- Empty diff: `{ok: true, verdict: "no_changes", response: "No changes to review.", truncated: false}`
-- Failure after retry: `{ok: false, error, rawText, parseError?, firstRawText?, retry_used: true, sessionId?}`
-
-## Severity ordering
-
-Present findings in this order:
-1. `critical` — breaks correctness, security, or data integrity
-2. `high` — likely bugs, race conditions, missed edge cases
-3. `medium` — maintainability, moderate logic flaws, missing tests
-4. `low` — style, documentation, minor nits
-
-Ties: alphabetical `file` then ascending `line_start`.
+Command file `plugins/kimi/commands/review.md` holds the concrete rules (JSON shape, presentation steps, severity badges, sort order). This reference explains the WHY — background rationale that wouldn't fit in the command file's frontmatter-bounded budget.
 
 ## Why the retry exists
 
-Kimi's first-shot JSON compliance was historically uneven (spec §4.2 notes empirical observations: markdown fences, "好的，这是 JSON：" prose preambles). The companion tries ONCE more with an error hint appended; the same session is reused (`--resume <sid>`) so kimi sees the prior exchange and corrects in place rather than re-reasoning from scratch.
+Kimi's first-shot JSON compliance is historically uneven (spec §4.2; empirical observations include markdown fences, "好的，这是 JSON：" prose preambles, and Chinese severity translations). The companion tries ONCE more with an error hint appended. The retry prompt is sent on the SAME session via `--resume <sid>` — best-effort nudge so kimi sees its prior malformed output and corrects in place rather than re-reasoning from scratch.
 
-If `retry_used === true` and `ok === true`, surface discreetly — it means the retry worked. If `retry_used === true` and `ok === false`, it means both attempts failed; escalate to the user.
+UX: if `retry_used === true` and `ok === true`, surface discreetly at the END of the rendered output ("Kimi's first response was malformed; the retry succeeded.") — signals something minor happened without distracting from findings. If `retry_used === true` and `ok === false`, escalate prominently — both attempts failed, and the raw texts (`firstRawText` + `rawText`) help operators debug.
 
-## Truncation policy
+Operator breadcrumb: a stderr warning "kimi review response failed parse/validation; retrying once..." fires before the retry, so background-job logs record the retry rate over time (gemini v1-review G-L3).
 
-Diffs above `MAX_REVIEW_DIFF_BYTES` (150 KB) are truncated with a visible marker. The review still runs, but findings covering the truncated tail won't exist. Always surface `truncated: true` as a warning, with a concrete alternative (`--scope staged`, per-path invocation).
+## Why severity is English-only
+
+Kimi priors may produce Chinese severity labels ("严重", "高", "中", "低") because the reviewed code is often Chinese-authored. The schema + validator enforce `critical|high|medium|low` as the exact English strings (gemini v1-review G-M1). A translated severity triggers a retry; the retry prompt restates the enum explicitly.
+
+## Why partial findings are rejected
+
+The prompt tells kimi: "fill ALL required fields for findings you include; omit the entire finding if you can't fill them." This prevents half-filled objects (e.g. severity-only, or no line numbers) that the user can't act on. Validation rejects any finding missing: severity, title, body, file, line_start, line_end, confidence, recommendation (codex v1-review C-H1).
+
+## Why truncation is a top-of-render warning
+
+For diffs >150 KB, the kimi call reviews only the first 150 KB slice. Findings returned don't cover the tail. If the warning is buried under the findings list, users assume the review is comprehensive (gemini v1-review G-M3). The command file therefore requires the warning to appear BEFORE verdict/summary — breaking the usual "summary first" pattern is the right tradeoff.
+
+## Non-findings shapes
+
+Two shapes bypass the standard `{verdict, summary, findings, next_steps}` payload:
+
+- **Empty diff fast path**: `{ok: true, verdict: "no_changes", response: "No changes to review.", truncated: false}` — no kimi call. The schema's `verdict` enum accepts `no_changes` specifically for this shape; the validator also accepts it but `buildReviewPrompt` tells kimi NEVER to produce `no_changes` (it's companion-side only).
+- **Failure after retry**: `{ok: false, error, rawText?, parseError?, firstRawText?, transportError?, truncated, retry_used, sessionId?}` — all fields nullable except the 4 that are always present (`ok`, `error`, `truncated`, `retry_used`). `transportError` carries the original callKimi status + partialResponse when the failure was at the kimi call level, not at parse/validation.
 
 ## Comparison with Claude's own `/review`
 
-When the user has run `/review` earlier in the conversation:
+When the user has run Claude's built-in `/review` earlier in the conversation:
 - **Both found**: overlapping findings (likely real issues) — surface first.
 - **Only Kimi**: unique to Kimi — may reflect different priors or language-specific intuition.
 - **Only Claude**: unique to Claude — may reflect different priors or blind spots.
 
-Do NOT auto-pick; present the buckets and let the user prioritize.
+Do NOT auto-pick; present three buckets and let the user prioritize.
 
 ## Absolutely no auto-fix
 
@@ -1178,15 +1220,28 @@ assert d["verdict"] in ("approve", "needs-attention"), d["verdict"]
 assert isinstance(d["summary"], str) and len(d["summary"]) > 0
 assert isinstance(d["findings"], list)
 assert isinstance(d["next_steps"], list)
-if d["findings"]:
-    f = d["findings"][0]
-    assert f["severity"] in ("critical", "high", "medium", "low"), f
-    assert isinstance(f.get("title"), str) and len(f["title"]) > 0
-print(f"T5 PASS — verdict={d['verdict']}, findings={len(d['findings'])}, retry_used={d.get('retry_used')}")
+
+# Gemini v1-review G-H1: the sample has a deliberate off-by-one (i <= items.length)
+# — kimi MUST catch it or at least surface SOMETHING. An empty findings array
+# against a known-buggy sample means the extraction/prompt path silently lost
+# the review; require at least one finding to prove the pipeline exercises
+# end-to-end.
+assert len(d["findings"]) > 0, f"expected at least one finding on buggy sample; got {d}"
+
+# Now validate structure of the first finding (which definitely exists).
+f = d["findings"][0]
+assert f["severity"] in ("critical", "high", "medium", "low"), f
+assert isinstance(f.get("title"), str) and len(f["title"]) > 0
+assert isinstance(f.get("body"), str) and len(f["body"]) > 0
+# line_start/line_end are required per v2 validator; assert their shape too
+assert isinstance(f.get("line_start"), int) and f["line_start"] >= 1
+assert isinstance(f.get("line_end"), int) and f["line_end"] >= 1
+
+print(f"T5 PASS — verdict={d['verdict']}, findings={len(d['findings'])}, retry_used={d.get('retry_used')}, first severity={f['severity']}")
 PY
 ```
 
-Expected: `T5 PASS` with verdict, finding count, retry_used flag.
+Expected: `T5 PASS` with at least 1 finding, verdict, retry_used flag. If kimi fails to flag the off-by-one, the assertion fires and we investigate (prompt too weak? sample too small?). Do NOT weaken the assertion — a silent pass here is worse than a noisy failure.
 
 - [ ] **Step 3: Empty-diff path**
 
@@ -1329,12 +1384,28 @@ Phase 2 post-review findings cashed in this phase:
 - codex M3 (whitespace-only trim) → Task 3.1 Step 1 ✅
 - gemini G6 (SKILL modularization) → Task 3.2 ✅
 
+**Phase 3 plan v1 3-way review findings (v1 → v2 integration, 2026-04-20):**
+
+Round 1 (plan v1, 10 findings total):
+- **codex C-H1** (High): validateReviewOutput accepted `{findings:[{}]}` (missing per-finding required fields) → Task 3.4 Step 4 extended with `requiredFindingKeys` loop + non-empty title/body checks ✅
+- **codex C-H2** (High): buildReviewPrompt throws sync on missing/malformed schema → Task 3.4 Step 5 `callKimiReview` wraps both buildReviewPrompt calls in try/catch, Task 3.5 Step 2 runReview adds defensive outer try/catch ✅
+- **codex C-M1** (Medium): extractReviewJson silently accepted trailing content after first balanced object → Task 3.4 Step 3 now rejects trailing `{` or `[` and routes to retry ✅
+- **codex C-M2** (Medium): callKimiReview failure shape inconsistent (raw errorResult spread leaked transport fields) → Task 3.4 Step 5 introduces `reviewError()` helper + `transportError` nested field for all non-ok returns ✅
+- **codex C-L1 + gemini G-H3 (convergent)**: Task 3.2 scaffold of review-render.md → overwritten in Task 3.6 wasted a write AND duplicated JSON shape + 7-step rules between command.md and reference → Task 3.2 Step 2 now skips review-render.md entirely; Task 3.6 Step 2 creates it with background rationale only (no JSON shape, no step-by-step rules — those stay in command.md) ✅
+- **gemini G-H1** (High): T5 test `if d["findings"]` swallowed empty-findings case → Task 3.7 Step 2 now asserts `len(d["findings"]) > 0` and structurally validates first finding's line_start/line_end ✅
+- **gemini G-H2** (High): `no_changes` verdict violated schema enum → Task 3.3 Step 1 schema extended to include `"no_changes"` in enum with a description explaining it's companion-side fast-path ✅; validator still rejects `no_changes` from kimi output explicitly (Task 3.4 Step 4 comment)
+- **gemini G-M1** (Medium): Chinese severity translation risk → Task 3.4 Step 2 prompt adds explicit "Do NOT translate these to Chinese" rule + retry hint also restates exact English enum ✅
+- **gemini G-M2** (Medium): Focus prompt ambiguity → Task 3.4 Step 2 rewritten to "Pay particular attention to: X. You may still report critical issues outside this area." ✅
+- **gemini G-M3** (Medium): Truncation warning buried → Task 3.6 Step 1 moves truncation warning to step 1 (BEFORE verdict/summary) with emoji + INCOMPLETE label ✅
+- **gemini G-L3** (Low, cheap): stderr breadcrumb for retry → Task 3.4 Step 5 `process.stderr.write` before retry ✅
+
+Round 2 (plan v2): deferred to post-execution — diminishing returns expected per `feedback_review_diminishing_returns.md` since all convergent and single-reviewer-but-clearly-correct findings are integrated.
+
 Explicitly deferred further:
-- codex M1 (cwd realpath normalization) — defer until symlink use emerges
-- codex L1 (unified empty-response shape) — cosmetic
-- gemini G-C2 (E2BIG >1MB prompts) — not a review-path blocker
-- gemini G-M1 (thinkBlocks UX phrasing) — cosmetic
-- gemini G-M2 (sibling template extraction) — Phase 5 scope (before first sibling plugin starts)
+- codex M1 / L1 (cwd realpath, cosmetic shape) — not review-blocking
+- gemini G-C2 (E2BIG >1MB) — review budget is 150 KB, well below threshold
+- gemini G-M1 thinkBlocks UX — cosmetic
+- gemini G-M2 sibling template extraction — Phase 5 scope
 
 **Placeholder scan:** all code blocks have literal values. No `<TBD>` / `<FILL>`. Schema file content is byte-aligned with gemini-plugin-cc intentionally.
 
@@ -1348,7 +1419,7 @@ Explicitly deferred further:
 
 ## Execution Handoff
 
-Plan saved to `docs/superpowers/plans/2026-04-20-phase-3-review-retry.md`.
+Plan saved to `docs/superpowers/plans/2026-04-20-phase-3-review-retry.md` (v2, 1 round of 3-way review integrated).
 
 Two execution options:
 
@@ -1356,7 +1427,7 @@ Two execution options:
 
 **2. Inline Execution** — do it in-session.
 
-**Before execution:** dispatch 3-way review (codex + gemini) on this plan, per `feedback_3way_review_specs.md`. Integrate findings, THEN execute.
+**Pre-execution review status:** Round 1 of 3-way review (codex + gemini) integrated into v2. Per `feedback_review_diminishing_returns.md`, round 2 is skipped by default because all convergent + clear-signal findings are closed. Proceed to execution.
 
 **Which approach?**
 
