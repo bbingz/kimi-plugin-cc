@@ -2,6 +2,13 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-20 [Codex — Phase 5 Task 5.1 review primitive extraction]
+
+- **status**: done
+- **scope**: plugins/kimi/scripts/lib/{review.mjs (new), kimi.mjs}, CHANGELOG.md
+- **summary**: Extracted provider-agnostic review constants + parse/validate/error helpers into `scripts/lib/review.mjs`, removed the duplicated bodies from `kimi.mjs`, and added top-level re-exports there so existing consumers keep importing the review constants/functions from `./kimi.mjs` unchanged. Deleted the completed Phase-5 extraction TODO and kept the seam visible with a short shared-module note.
+- **next**: Task 5.2 can move the review orchestrator into `review.mjs` without changing the public import surface.
+
 ## 2026-04-20 [Claude Opus 4.7 — Phase 4 post-review polish]
 
 - **status**: done

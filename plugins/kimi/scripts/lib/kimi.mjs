@@ -4,6 +4,21 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { runCommand, binaryAvailable } from "./process.mjs";
+import {
+  MAX_REVIEW_DIFF_BYTES,
+  TRUNCATION_NOTICE,
+  RETRY_NOTICE,
+  extractReviewJson,
+  validateReviewOutput,
+  reviewError as reviewErrorImpl,
+} from "./review.mjs";
+export {
+  MAX_REVIEW_DIFF_BYTES,
+  TRUNCATION_NOTICE,
+  RETRY_NOTICE,
+  extractReviewJson,
+  validateReviewOutput,
+} from "./review.mjs";
 
 // ── Constants ──────────────────────────────────────────────
 // All values below are sourced from doc/probe/probe-results.json v3.
@@ -15,23 +30,6 @@ const KIMI_BIN = process.env.KIMI_CLI_BIN || "kimi";
 const PING_MAX_STEPS = 1;
 const SESSION_ID_STDERR_REGEX = /kimi -r ([0-9a-f-]{36})/;
 const LARGE_PROMPT_THRESHOLD_BYTES = 100_000;
-
-// Diff budget for /kimi:review (spec §4.2; probe 03 stdin headroom is ~200k,
-// but leave margin for schema block + summary + focus line in the prompt).
-// Reviews above this get truncated with a visible warning.
-export const MAX_REVIEW_DIFF_BYTES = 150_000;
-
-// Render-layer notices (gemini Phase-3-review G-H2, G-H3). Signals the
-// companion wants surfaced consistently go into JSON fields here rather
-// than relying on Claude's rendering discipline on long outputs — long
-// findings lists empirically cause warnings/footnotes at step 1 or step 6
-// of review.md to get buried or dropped. Keeping the strings in code also
-// means the command file can say "render <field> verbatim" rather than
-// re-templating the same text.
-export const TRUNCATION_NOTICE =
-  "⚠️ Diff exceeded the review budget; only the first 150 KB was reviewed. Findings below are INCOMPLETE. Consider narrowing scope (--scope staged) or running per-path.";
-export const RETRY_NOTICE =
-  "(Kimi's first response was malformed; the retry succeeded.)";
 
 // ── Runtime sentinels (kimi-cli source-derived markers) ────
 // Per codex source-read. If kimi-cli updates, only this block changes.
@@ -664,153 +662,12 @@ ${context.summary}${focusLine}
 ${context.content}`;
 }
 
-// Locate and parse the JSON object in kimi's response. Handles 3 observed
-// dirty modes: (a) bare JSON, (b) ```json ... ``` fence, (c) prose + JSON.
-// Returns { ok: true, data } or { ok: false, error, parseError, rawText }.
-export function extractReviewJson(text) {
-  if (typeof text !== "string" || !text.trim()) {
-    return { ok: false, error: "empty response", parseError: null, rawText: text };
-  }
-
-  // Strip markdown fences first (mode b).
-  let candidate = text.trim();
-  const fenceMatch = candidate.match(/^\`\`\`(?:json)?\s*\n([\s\S]*?)\n\`\`\`\s*$/);
-  if (fenceMatch) candidate = fenceMatch[1].trim();
-
-  // Locate first '{' (mode c prose preamble).
-  const firstBrace = candidate.indexOf("{");
-  if (firstBrace === -1) {
-    return { ok: false, error: "no JSON object found in response", parseError: null, rawText: text };
-  }
-  candidate = candidate.slice(firstBrace);
-
-  // Walk forward to matching brace (ignore string contents). Prevents failure
-  // when kimi appends trailing prose after valid JSON.
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  let end = -1;
-  for (let i = 0; i < candidate.length; i++) {
-    const c = candidate[i];
-    if (escape) { escape = false; continue; }
-    if (c === "\\") { escape = true; continue; }
-    if (c === '"') { inString = !inString; continue; }
-    if (inString) continue;
-    if (c === "{") depth++;
-    else if (c === "}") { depth--; if (depth === 0) { end = i; break; } }
-  }
-  if (end === -1) {
-    return { ok: false, error: "unterminated JSON object", parseError: null, rawText: text };
-  }
-  const jsonStr = candidate.slice(0, end + 1);
-
-  // Reject trailing JSON/structured content (codex v1-review C-M1): if kimi
-  // emits `{...}{...}` or `{...}[...]`, our walker would take the first object
-  // and ignore the rest. Treat that as "malformed — retry" so the second
-  // attempt has a chance at producing a single object.
-  const trailing = candidate.slice(end + 1).trim();
-  if (trailing.startsWith("{") || trailing.startsWith("[")) {
-    return { ok: false, error: "response contains multiple top-level JSON values", parseError: null, rawText: text };
-  }
-
-  try {
-    const data = JSON.parse(jsonStr);
-    return { ok: true, data };
-  } catch (e) {
-    return { ok: false, error: "JSON parse failed", parseError: e.message, rawText: text };
-  }
-}
-
-// Minimal hand-written validator for review-output.schema.json.
-// Enforces the 4 contract rules that T5 + prompt cover:
-//   (1) required top-level keys
-//   (2) verdict enum (approve | needs-attention) — NOT "no_changes";
-//       that's a companion-side fast-path shape, not kimi output
-//   (3) per-finding required fields (codex v1-review C-H1 fix)
-//   (4) severity enum + numeric bounds on confidence/line_start/line_end
-// Returns { ok: true } or { ok: false, errors: [string, ...] }.
-// Intentionally NOT a full JSON Schema implementation — we avoid the ajv
-// dep (zero-deps rule) and only check the rules T5 + the command contract
-// actually care about.
-export function validateReviewOutput(data) {
-  const errors = [];
-  if (!data || typeof data !== "object" || Array.isArray(data)) {
-    return { ok: false, errors: ["payload is not an object"] };
-  }
-  for (const k of ["verdict", "summary", "findings", "next_steps"]) {
-    if (!(k in data)) errors.push(`missing top-level field: ${k}`);
-  }
-  if ("verdict" in data && !["approve", "needs-attention"].includes(data.verdict)) {
-    errors.push(`verdict must be "approve" or "needs-attention" (no_changes is a companion-side shape, not a valid kimi verdict), got ${JSON.stringify(data.verdict)}`);
-  }
-  if ("summary" in data && (typeof data.summary !== "string" || data.summary.length === 0)) {
-    errors.push("summary must be a non-empty string");
-  }
-  if ("findings" in data) {
-    if (!Array.isArray(data.findings)) {
-      errors.push("findings must be an array");
-    } else {
-      const requiredFindingKeys = [
-        "severity", "title", "body", "file",
-        "line_start", "line_end", "confidence", "recommendation",
-      ];
-      data.findings.forEach((f, i) => {
-        if (!f || typeof f !== "object" || Array.isArray(f)) {
-          errors.push(`findings[${i}] is not an object`);
-          return;
-        }
-        // Per-finding required fields (codex C-H1): reject partial findings.
-        // The prompt explicitly tells kimi to omit entire findings it can't
-        // fill, so missing fields signal the LLM ignored instructions.
-        for (const k of requiredFindingKeys) {
-          if (!(k in f)) errors.push(`findings[${i}] missing required field: ${k}`);
-        }
-        if ("severity" in f && !["critical", "high", "medium", "low"].includes(f.severity)) {
-          errors.push(`findings[${i}].severity must be critical|high|medium|low (NOT translated to Chinese), got ${JSON.stringify(f.severity)}`);
-        }
-        if ("title" in f && (typeof f.title !== "string" || f.title.length === 0)) {
-          errors.push(`findings[${i}].title must be a non-empty string`);
-        }
-        if ("body" in f && (typeof f.body !== "string" || f.body.length === 0)) {
-          errors.push(`findings[${i}].body must be a non-empty string`);
-        }
-        if ("confidence" in f && (typeof f.confidence !== "number" || f.confidence < 0 || f.confidence > 1)) {
-          errors.push(`findings[${i}].confidence must be number in [0,1], got ${JSON.stringify(f.confidence)}`);
-        }
-        for (const k of ["line_start", "line_end"]) {
-          if (k in f && (!Number.isInteger(f[k]) || f[k] < 1)) {
-            errors.push(`findings[${i}].${k} must be integer >= 1, got ${JSON.stringify(f[k])}`);
-          }
-        }
-      });
-    }
-  }
-  if ("next_steps" in data && !Array.isArray(data.next_steps)) {
-    errors.push("next_steps must be an array");
-  }
-  return errors.length === 0 ? { ok: true } : { ok: false, errors };
-}
-
-// Unified review-error shape (codex v1-review C-M2). ALL non-ok returns go
-// through this helper so review-render.md consumers see a consistent
-// { ok:false, error, rawText?, parseError?, firstRawText?, transportError?,
-//   truncated, retry_used, sessionId? } shape — never a raw errorResult
-// spread that leaks callKimi's transport fields (status/partialResponse/events).
-function reviewError({ error, rawText = null, parseError = null, firstRawText = null, transportError = null, truncated, retry_used, sessionId = null }) {
-  return {
-    ok: false,
-    error,
-    rawText,
-    parseError,
-    firstRawText,
-    transportError,
-    truncated,
-    truncation_notice: truncated ? TRUNCATION_NOTICE : null,
-    retry_used,
-    retry_notice: retry_used ? RETRY_NOTICE : null,
-    sessionId,
-  };
-}
+// ── Review primitives (moved to review.mjs in Phase 5) ────
+// extractReviewJson, validateReviewOutput, reviewError now live in
+// plugins/kimi/scripts/lib/review.mjs so sibling plugins can share them
+// without copy-paste. The first five symbols are re-exported above for
+// back-compat; reviewError stays a local binding for callKimiReview.
+const reviewError = reviewErrorImpl;
 
 // High-level wrapper: build prompt → callKimi → extract → validate → retry
 // once if parse or validation fails. Returns a shape extended with
@@ -940,15 +797,6 @@ export function callKimiReview({ context, focus, schemaPath, model, cwd, timeout
     sessionId: retryResult.sessionId,
   };
 }
-
-// TODO(Phase 5): extract buildReviewPrompt / extractReviewJson /
-// validateReviewOutput / reviewError / callKimiReview into shared
-// `scripts/lib/review.mjs` module with the agent-call function injected
-// (gemini Phase-3-review G-M2). Only kimi-specific pieces are the "好的,
-// 这是 JSON：" prose warning in buildReviewPrompt + the callKimi/
-// callKimiStreaming bindings + the session-reuse hint text. This extraction
-// makes minimax-plugin-cc / qwen-plugin-cc etc. able to reuse the
-// parse+validate+retry machinery without copy-paste.
 
 // ── Exports for Phase 2+ to consume ────────────────────────
 
