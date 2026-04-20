@@ -2,6 +2,16 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-20 [Claude Opus 4.7 — Phase 2 post-review polish]
+
+- **status**: done
+- **scope**: plugins/kimi/scripts/lib/kimi.mjs, plugins/kimi/scripts/lib/process.mjs, plugins/kimi/scripts/kimi-companion.mjs, plugins/kimi/skills/kimi-result-handling/SKILL.md
+- **summary**: First impl-layer 3-way review (codex + gemini, parallel) after `phase-2-ask` tag. Codex returned 1 Critical / 2 High / 3 Medium / 1 Low; gemini returned 2 Critical / 3 High / 2 Medium / 1 Low. Integrated all Critical + High into two follow-up commits:
+  - **Commit 0cbb7cf (correctness)** — codex C1/H1/H2: runCommand preserved `status=null` instead of collapsing to 0; callKimi/callKimiStreaming map `signal=SIGINT/SIGTERM → status=130/143` via new `statusFromSignal` helper; streaming `close(code, signal)` signature picked up; stdin EPIPE/ERR_STREAM_DESTROYED swallowed + `writable` guard; describeKimiExit SIGINT text changed "Cancelled" → "Interrupted" so ask.md's `"interrupted"` template router matches both signal paths (gemini G-H2 partial).
+  - **Commit 1ac264f (UX consistency)** — gemini G-C1/G-H1/G-H3: SKILL.md's `/kimi:ask` subsections rewritten to defer to ask.md (they previously contradicted the verbatim-presentation contract — assumed JSON consumer, instructed "Kimi says:" prefix, offered unprompted "Translate to English?"); runAsk now emits a stderr warning when `resumeSessionId` was requested but returned `sessionId` differs.
+- **deferred to Phase 3+**: codex M1 (cwd realpath normalization), codex M2 (sessionId-null warning in JSON/stream modes), codex M3 (whitespace-only response trim), codex L1 (unified empty-response shape), gemini G-C2 (E2BIG for >1MB prompts — our 150KB test PASS, not a Phase 2 blocker), gemini G-M1 (thinkBlocks UX tease phrasing), gemini G-M2 (sibling-plugin template extraction — Phase 5 scope).
+- **next**: author docs/superpowers/plans/YYYY-MM-DD-phase-3-review-retry.md. Phase 3 opens with Task 3.0 (modularize kimi-result-handling SKILL into `references/<command>-render.md` — addresses gemini G6), then `/kimi:review` with git-diff collection, schema-validated JSON findings, 1-shot JSON-parse retry.
+
 ## 2026-04-20 [Claude Opus 4.7 — Phase 2 ask + streaming]
 
 - **status**: done
