@@ -23,7 +23,7 @@
 
 ## Substitution Table
 
-Global find-and-replace these 7 tokens when copying this template into a new plugin's Phase 1 plan.
+Global find-and-replace these 9 tokens when copying this template into a new plugin's Phase 1 plan.
 
 | Placeholder | Example (minimax-plugin-cc) | Description |
 |---|---|---|
@@ -74,12 +74,12 @@ plugins/{{LLM}}/scripts/*.tmp
 ```markdown
 # {{LLM}}-plugin-cc working directory instructions
 
-This repo is a Claude Code plugin that wraps {{LLM_CAP}} CLI. Structure mirrors `/Users/bing/-Code-/kimi-plugin-cc/` but every file is hand-rewritten (P2).
+This repo is a Claude Code plugin that wraps {{LLM_CAP}} CLI. Structure mirrors `{{KIMI_REPO_ROOT}}/` but every file is hand-rewritten (P2).
 
 ## Before coding
 - Read `docs/superpowers/specs/YYYY-MM-DD-{{LLM}}-plugin-cc-design.md`
 - Read `doc/probe/probe-results.json` for literal values (event keys, exit codes, hash algo, etc.)
-- Read `../kimi-plugin-cc/lessons.md` (the template's lesson file) and recent 5 entries of `CHANGELOG.md`
+- Read `{{KIMI_REPO_ROOT}}/lessons.md` (the template's lesson file) and recent 5 entries of `CHANGELOG.md`
 
 ## Before committing
 - Append CHANGELOG entry (status / scope / summary / next)

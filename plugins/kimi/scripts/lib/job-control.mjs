@@ -3,7 +3,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import process from "node:process";
 
-import { callKimiStreaming } from "./kimi.mjs";
+import { callKimiStreaming, statusFromSignal } from "./kimi.mjs";
 import {
   appendTimingHistory,
   ensureStateDir,
@@ -122,7 +122,12 @@ export function runWorker(jobId, workspaceRoot, companionScript, args) {
   });
 
   const now = new Date().toISOString();
-  const exitCode = result.status ?? 1;
+  // Map signal→status so SIGINT/SIGTERM kills surface 130/143 in the job
+  // record, matching the foreground signal-propagation contract (codex
+  // Phase-5-v0.1-review H1). result.status can be null when the child
+  // was signal-killed; without this mapping, exit becomes 1 and background
+  // consumers can't distinguish "failed" from "cancelled by signal".
+  const exitCode = result.status ?? statusFromSignal(result.signal) ?? 1;
   const status = exitCode === 0 ? "completed" : "failed";
   const phase = exitCode === 0 ? "done" : "failed";
 

@@ -81,10 +81,25 @@ lose session-id primary path and must fall back to
 
 ### Pit 4: `work_dirs[].path` is verbatim, not realpath'd
 
-In Phase 2 we thought `/tmp/x` vs `/private/tmp/x` would be normalized.
-It isn't — kimi stores whatever string was passed via `-w`. Solution:
-plugin code always calls `fs.realpathSync(cwd)` before spawning kimi and
-compares the same value when reading `kimi.json`.
+In Phase 2 we thought `/tmp/x` vs `/private/tmp/x` would be normalized
+by kimi-cli. It isn't — `kimi.json.work_dirs[].path` stores whatever
+string the process saw as cwd at spawn time.
+
+**Status in v0.1 code:** we do NOT call `fs.realpathSync(cwd)` before
+spawning kimi. Instead, `callKimi` / `callKimiStreaming` rely on
+**single-variable consistency** — the same `cwd` string is passed to
+`spawn({ cwd })` AND to `readSessionIdFromKimiJson(cwd)`, so the two
+sides are guaranteed to match regardless of whether the path was
+already resolved. This works as long as callers don't pass
+`/tmp/x` in one breath and `/private/tmp/x` in another.
+
+**v0.2 gap:** if a caller external to the companion (e.g. a hook or
+sibling script) reads `kimi.json` directly, it must apply realpath
+on the cwd it compares against. Sibling plugins (minimax / qwen /
+doubao) should either adopt the same single-variable discipline or
+explicitly `fs.realpathSync(cwd)` at the entry point. Consider
+promoting this to a helper in `lib/review.mjs` or a dedicated
+`lib/paths.mjs` when the second plugin lands.
 
 ### Pit 5: `(none)` skeleton defeats naive empty-diff checks
 

@@ -39,7 +39,7 @@ matching the schema below.
 <output_contract>
 Return ONLY the JSON object. No markdown code fence. No prose before or after.
 severity MUST be critical|high|medium|low — do NOT translate to Chinese.
-verdict MUST be approve or needs-attention.
+verdict MUST be approve or needs-attention (never "no_changes" — that is a companion-only fast path for empty diffs; see antipatterns §8).
 Fill ALL required fields per finding, or omit the finding entirely.
 </output_contract>
 
@@ -74,7 +74,7 @@ empty-state/null/timeout, schema drift, observability gaps.
 </attack_surface>
 
 <output_contract>
-[same strict JSON rules as Review recipe]
+[same strict JSON rules as Review recipe — including the `no_changes` ban]
 Plus adversarial stance rules:
 - Do NOT use balanced phrasing ("一方面...另一方面" / "on one hand...on the other hand").
 - Do NOT list pros and cons.

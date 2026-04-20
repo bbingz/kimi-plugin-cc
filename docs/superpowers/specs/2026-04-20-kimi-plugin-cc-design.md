@@ -38,7 +38,8 @@
 ### 1.4 成功标准
 
 - 装好 `kimi` CLI 并 `kimi login` 过的机器上：
-  `claude plugins add ./plugins/kimi` → `/kimi:setup` 通 → `/kimi:ask "hello"` 返回 → `/kimi:review` 对一个小 diff 产出符合 schema 的 JSON
+  `claude plugins marketplace add <repo-path>` → `claude plugins install kimi@kimi-plugin` → `/kimi:setup` 通 → `/kimi:ask "hello"` 返回 → `/kimi:review` 对一个小 diff 产出符合 schema 的 JSON
+  （**注意**：`claude plugins add ./path` 在 Claude Code 里不被接受；本地开发必须先注册 marketplace 再按 `<name>@<marketplace>` 安装，见附录 H）
 - `lessons.md` 至少 5 条 gemini/kimi 差异点
 - 命令级手工验证 checklist 的 T1-T5 通过（见 §6.1）
 

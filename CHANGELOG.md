@@ -2,6 +2,30 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-21 [Claude Opus 4.7 — v0.1 comprehensive 3-way review integration]
+
+- **status**: done
+- **scope**: plugins/kimi/scripts/{kimi-companion.mjs, lib/{kimi.mjs, job-control.mjs, state.mjs}}, plugins/kimi/commands/{review.md, setup.md}, plugins/kimi/skills/{kimi-prompting/references/kimi-prompt-recipes.md, kimi-result-handling/SKILL.md}, README.md, lessons.md, docs/superpowers/specs/2026-04-20-kimi-plugin-cc-design.md, docs/superpowers/templates/phase-1-template.md, CHANGELOG.md
+- **summary**: Comprehensive v0.1 review dispatched pre-sibling-kickoff (codex + gemini parallel). Both returned **SHIP: no**. 12 findings integrated into a single polish pass:
+  - **codex C1 (CRITICAL — state race)**: `saveState` + `writeJobFile` now use atomic temp-file+rename via new `atomicWriteFileSync` helper. `updateState` no longer silently falls back to unlocked write after 10 retries; replaced with one forced lock-break + exclusive write attempt, and a structured error if that also fails.
+  - **codex C2 (CRITICAL — template path hardcoded)**: `phase-1-template.md` CLAUDE.md block changed `../kimi-plugin-cc/lessons.md` → `{{KIMI_REPO_ROOT}}/lessons.md`. Matching edit propagated to the template's `mirrors` line.
+  - **codex C3 (CRITICAL — lessons.md lied about realpath fix)**: Pit 4 rewritten to accurately describe what's in the code (single-variable-consistency between spawn `cwd` and `readSessionIdFromKimiJson(cwd)` — NO `fs.realpathSync` is called). v0.2 gap flagged explicitly for siblings.
+  - **codex H1 (HIGH — background signal propagation)**: `job-control.mjs:runWorker` now maps `result.signal` through the newly-exported `statusFromSignal` helper, so SIGINT/SIGTERM background-job exits surface 130/143 in the job record (matching foreground contract).
+  - **codex H2 (HIGH — silent --scope fallback)**: new `validateScopeOption` in `kimi-companion.mjs` rejects invalid values with exit 2 (USAGE_ERROR). Validation runs BEFORE the background branch for `/kimi:adversarial-review` so bg jobs can't swallow the error. Verified: `--scope stagged` now exits 2 with a structured JSON error.
+  - **codex H3 (HIGH — malformed JSONL silent drop)**: `parseKimiEventLine` return shape changed from nullable event to `{ok, kind, event?, error?, raw?}`. `parseKimiStdout` + streaming path both track `malformedCount`. Non-zero counts surface as (a) a stderr breadcrumb on otherwise-successful runs and (b) an annotated error message on empty-text failures ("(and N malformed JSONL lines silently dropped)"). `malformedCount` propagates in the callKimi / callKimiStreaming return envelope.
+  - **codex M1 (setup.md review-gate docs)**: reworded to reflect Phase-4-live reality; escape-hatch note added per phase-4-polish gemini G-H1.
+  - **codex L1 (unused emitJson)**: resolved by threading `emitJson` through `validateScopeOption(options.scope, emitJson)` at both review + adversarial-review call sites.
+  - **gemini G-C1 (CRITICAL — recipes missing no_changes ban)**: `kimi-prompt-recipes.md` Review + Adversarial Review recipes' `<output_contract>` now explicitly include `(never "no_changes" — companion-only fast path; see antipatterns §8)`. Aligns recipes with Antipattern 8 + `validateReviewOutput` enforcement.
+  - **gemini G-C2 (CRITICAL — spec §1.4 stale install command)**: `claude plugins add ./plugins/kimi` → correct `marketplace add <repo-path>` + `install kimi@kimi-plugin` two-step flow with explicit note referencing appendix H.
+  - **gemini G-H1 (HIGH — template token count)**: "Global find-and-replace these 7 tokens" → "9 tokens" to match the expanded substitution table (added `{{LLM_UPPER}}` + `{{KIMI_REPO_ROOT}}` in Phase 5).
+  - **gemini G-H2**: partial overlap with codex C2 (the CLAUDE.md-as-embedded-in-template issue). Repo-level `CLAUDE.md` verified clean (does NOT contain `../kimi-plugin-cc/lessons.md` — gemini misread).
+  - **gemini G-M1 (kimi-result-handling stale)**: deleted "What still needs Phase 5 work" section; removed "Phase 1 early draft" subtitle; updated references section to include adversarial-review render rules pointer.
+  - **gemini G-M2 (README hardcoded path)**: `/Users/bing/-Code-/kimi-plugin-cc` → `$PWD`. Commands section expanded to list all 8 v0.1 slash commands (was 1).
+  - **gemini G-L1 (review.md argument-hint)**: dropped `<>` around scope enum (matches adversarial-review.md style).
+- **Verification**: T5 PASS (`/kimi:review` → needs-attention, 4 findings). T9 PASS (`/kimi:adversarial-review` → needs-attention, 4 findings, red-team regex matched). H2 smoke PASS (`--scope stagged` exits 2 with structured JSON error on both review + adversarial-review).
+- **Non-convergent / declined**: gemini claimed `CLAUDE.md:12` has `../kimi-plugin-cc/lessons.md` — verified false (only the template's embedded CLAUDE.md block had it, already fixed by codex C2 edit). No other declined findings.
+- **next**: update `phase-5-final` tag to include this polish (or add a `phase-5-post-review` tag); memory files (project_current_progress.md) refresh to reflect new HEAD. Then minimax-plugin-cc Phase 0 kickoff can proceed using the corrected template.
+
 ## 2026-04-20 [Claude Opus 4.7 — Phase 5 final: v0.1 close]
 
 - **status**: done

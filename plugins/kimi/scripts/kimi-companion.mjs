@@ -43,6 +43,21 @@ const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // Absolute path to this file — needed for background respawn.
 const SELF = fileURLToPath(import.meta.url);
 
+// Accepted values for `--scope` (shared by /kimi:review + /kimi:adversarial-review).
+// Invalid values must exit 2 (USAGE_ERROR) rather than silently falling back to
+// "auto" — a typo like `--scope stagged` previously reviewed the wrong diff
+// with no error (codex Phase-5-v0.1-review H2).
+const VALID_REVIEW_SCOPES = new Set(["auto", "staged", "unstaged", "working-tree", "branch"]);
+
+function validateScopeOption(scope, emitJson) {
+  if (scope === undefined || scope === null || scope === "") return "auto";
+  if (VALID_REVIEW_SCOPES.has(scope)) return scope;
+  const msg = `Invalid --scope value: ${JSON.stringify(scope)}. Expected one of: ${[...VALID_REVIEW_SCOPES].join(", ")}.`;
+  if (emitJson) process.stdout.write(JSON.stringify({ ok: false, error: msg }, null, 2) + "\n");
+  else process.stderr.write("Error: " + msg + "\n");
+  process.exit(2);
+}
+
 // Resolve the git workspace root for the given cwd (background job tracking
 // scopes state to the workspace). Falls back to cwd when not in a git repo.
 function resolveWorkspaceRoot(cwd) {
@@ -323,7 +338,7 @@ async function runReview(rawArgs) {
     process.exit(1);
   }
 
-  const scope = options.scope || "auto";
+  const scope = validateScopeOption(options.scope, emitJson);
   const base = options.base || null;
   const context = collectReviewContext(cwd, { base, scope });
 
@@ -419,6 +434,12 @@ async function runAdversarialReview(rawArgs) {
     process.exit(1);
   }
 
+  // Validate --scope BEFORE the background branch so a typo fails fast
+  // (otherwise the bad value would be forwarded to the worker and
+  // re-surfaced as a deferred error inside the job log).
+  const scope = validateScopeOption(options.scope, emitJson);
+  const base = options.base || null;
+
   // Background mode: spawn a detached worker that re-enters this subcommand
   // foreground. Mirror the pattern gemini-companion uses for adversarial-review.
   if (options.background) {
@@ -431,8 +452,8 @@ async function runAdversarialReview(rawArgs) {
       cwd,
     });
     const bgArgs = ["adversarial-review"];
-    if (options.base) bgArgs.push("--base", options.base);
-    if (options.scope) bgArgs.push("--scope", options.scope);
+    if (base) bgArgs.push("--base", base);
+    bgArgs.push("--scope", scope);
     if (options.model) bgArgs.push("--model", options.model);
     positionals.forEach((p) => bgArgs.push(p));
 
@@ -443,8 +464,6 @@ async function runAdversarialReview(rawArgs) {
     process.exit(0);
   }
 
-  const scope = options.scope || "auto";
-  const base = options.base || null;
   const context = collectReviewContext(cwd, { base, scope });
 
   if (isEmptyContext(context)) {

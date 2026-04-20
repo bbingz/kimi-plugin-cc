@@ -90,13 +90,30 @@ export function loadState(workspaceRoot) {
   return defaultState();
 }
 
+// Atomic write: write to a same-directory temp file, fsync, rename over the
+// target. POSIX rename is atomic within a filesystem, so concurrent writers
+// can't see a torn file. Without this, two background-job completions could
+// interleave their writes and one state.json ends up as a hybrid of both
+// (codex Phase-5-v0.1-review C1).
+function atomicWriteFileSync(targetPath, data) {
+  const tmp = `${targetPath}.tmp-${process.pid}-${Date.now().toString(36)}`;
+  const fd = fs.openSync(tmp, "w");
+  try {
+    fs.writeSync(fd, data);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, targetPath);
+}
+
 export function saveState(workspaceRoot, state) {
   ensureStateDir(workspaceRoot);
   // Prune old jobs
   state.jobs = pruneJobs(state.jobs);
   // Remove orphaned job files
   cleanupOrphanedFiles(workspaceRoot, state.jobs);
-  fs.writeFileSync(
+  atomicWriteFileSync(
     resolveStateFile(workspaceRoot),
     JSON.stringify(state, null, 2) + "\n"
   );
@@ -141,11 +158,29 @@ export function updateState(workspaceRoot, mutate) {
     }
   }
 
-  // Fallback: proceed without lock after exhausting retries
-  const state = loadState(workspaceRoot);
-  mutate(state);
-  saveState(workspaceRoot, state);
-  return state;
+  // Last-resort path after exhausting retries: attempt ONE forced lock-break
+  // + exclusive write. Better than the previous unconditional unlocked write,
+  // because the unlocked path allowed an interleaved mutate+save from another
+  // process to clobber our change entirely (codex Phase-5-v0.1-review C1).
+  // The forced break is safe-ish because we've already waited ~30s worth of
+  // retry windows; a lock older than that is almost certainly abandoned.
+  removeFileIfExists(lockFile);
+  try {
+    const lockFd = fs.openSync(lockFile, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
+    fs.closeSync(lockFd);
+    try {
+      const state = loadState(workspaceRoot);
+      mutate(state);
+      saveState(workspaceRoot, state);
+      return state;
+    } finally {
+      removeFileIfExists(lockFile);
+    }
+  } catch (e) {
+    // Two processes simultaneously broke the lock + raced to create it. Give
+    // up with a structured error; caller can choose to retry or surface.
+    throw new Error(`state.json update contention: could not acquire lock after ${maxRetries} retries + forced break (${e.message})`);
+  }
 }
 
 function pruneJobs(jobs) {
@@ -209,7 +244,7 @@ export function listJobs(workspaceRoot) {
 export function writeJobFile(workspaceRoot, jobId, payload) {
   ensureStateDir(workspaceRoot);
   const file = resolveJobFile(workspaceRoot, jobId);
-  fs.writeFileSync(file, JSON.stringify(payload, null, 2) + "\n");
+  atomicWriteFileSync(file, JSON.stringify(payload, null, 2) + "\n");
 }
 
 export function readJobFile(jobFile) {

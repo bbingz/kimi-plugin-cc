@@ -233,15 +233,20 @@ export function getKimiAuthStatus(cwd) {
 
 // ── Stream-json event parsing (spec §3.3.2) ────────────────
 
-// Parse a single JSONL line to an event. Returns null for blank/non-JSON.
-// Errors propagate back to caller as null so they can decide on partial recovery.
+// Parse a single JSONL line to an event. Returns { ok: true, event } for a
+// parsed event, { ok: false, kind: "blank" } for blank/non-JSON (benign
+// skip), or { ok: false, kind: "malformed", error, raw } for a line that
+// looked like JSON (starts with `{`) but failed JSON.parse. Callers use the
+// malformed-count to distinguish "empty response" from "corrupted JSONL"
+// (codex Phase-5-v0.1-review H3).
 export function parseKimiEventLine(raw) {
   const trimmed = (raw || "").trim();
-  if (!trimmed.startsWith("{")) return null;
+  if (!trimmed) return { ok: false, kind: "blank" };
+  if (!trimmed.startsWith("{")) return { ok: false, kind: "blank" };
   try {
-    return JSON.parse(trimmed);
-  } catch {
-    return null;
+    return { ok: true, event: JSON.parse(trimmed) };
+  } catch (e) {
+    return { ok: false, kind: "malformed", error: e.message, raw: trimmed };
   }
 }
 
@@ -256,16 +261,25 @@ export function extractAssistantText(event) {
     .join("");
 }
 
-// Parse a multi-line stdout buffer into { events, assistantText, toolEvents }.
-// Multi-line support is required (probe 01/codex Q2: single run may emit
-// several JSONL lines when tool use is present).
+// Parse a multi-line stdout buffer into { events, assistantText, toolEvents,
+// malformedCount }. Multi-line support is required (probe 01/codex Q2:
+// single run may emit several JSONL lines when tool use is present).
+// `malformedCount` surfaces the number of lines that looked like JSON but
+// failed parse — callers can distinguish "kimi produced nothing" (count 0,
+// empty result) from "kimi produced corrupted stream-json" (count > 0)
+// for diagnostic purposes (codex Phase-5-v0.1-review H3).
 export function parseKimiStdout(stdout) {
   const events = [];
   const toolEvents = [];
   const textParts = [];
+  let malformedCount = 0;
   for (const raw of (stdout || "").split("\n")) {
-    const ev = parseKimiEventLine(raw);
-    if (!ev) continue;
+    const result = parseKimiEventLine(raw);
+    if (!result.ok) {
+      if (result.kind === "malformed") malformedCount++;
+      continue;
+    }
+    const ev = result.event;
     events.push(ev);
     if (ev.role === "assistant") {
       const t = extractAssistantText(ev);
@@ -274,7 +288,7 @@ export function parseKimiStdout(stdout) {
       toolEvents.push(ev);
     }
   }
-  return { events, assistantText: textParts.join(""), toolEvents };
+  return { events, assistantText: textParts.join(""), toolEvents, malformedCount };
 }
 
 // ── Session id extraction (spec §3.4) ──────────────────────
@@ -335,7 +349,9 @@ function buildKimiArgs({ prompt, model, useStdinForPrompt, resumeSessionId, extr
 // Map a posix signal name to the conventional exit code (128 + N).
 // Used to recover lost exit-code semantics when Node reports
 // status=null + signal=<name> for signaled children (codex C1).
-function statusFromSignal(signal) {
+// Exported so job-control.mjs can apply the same mapping to
+// background-worker exits (Phase-5-v0.1-review H1).
+export function statusFromSignal(signal) {
   if (signal === "SIGINT") return KIMI_EXIT.SIGINT;
   if (signal === "SIGTERM") return KIMI_EXIT.SIGTERM;
   return null;
@@ -426,25 +442,37 @@ export function callKimi({
     });
   }
 
-  const { events, assistantText, toolEvents } = parseKimiStdout(result.stdout);
+  const { events, assistantText, toolEvents, malformedCount } = parseKimiStdout(result.stdout);
 
   // ── No-visible-text guard (gemini G1 + codex Phase-2-review M3 trim) ──
   // If assistant produced no visible text OR only whitespace, treat as
-  // failure regardless of event count. Catches three silent-failure modes:
+  // failure regardless of event count. Catches four silent-failure modes:
   //   (a) Exit 0 + 0 events     (stream-json format unknown / uncommon dump)
   //   (b) Exit 0 + think-only   (reasoning but no surfaced answer)
   //   (c) Exit 0 + whitespace   (e.g. only "   \n" — visually empty to user)
+  //   (d) Exit 0 + malformed JSONL (corrupted stream — codex Phase-5 H3)
   if (!assistantText.trim()) {
+    const malformedNote = malformedCount > 0
+      ? ` (and ${malformedCount} malformed JSONL line${malformedCount > 1 ? "s" : ""} silently dropped)`
+      : "";
     return {
       ok: false,
-      error: events.length === 0
+      error: (events.length === 0
         ? "kimi exited 0 but produced no stream-json events"
-        : "kimi produced no visible text (think-only response)",
+        : "kimi produced no visible text (think-only response)") + malformedNote,
       status: KIMI_EXIT.OK,
       rawStdout: (result.stdout || "").slice(0, 2000),
       events,
       thinkBlocks: countThinkBlocks(events),
+      malformedCount,
     };
+  }
+
+  // Stderr breadcrumb for partial corruption on otherwise-successful runs.
+  if (malformedCount > 0) {
+    process.stderr.write(
+      `Warning: ${malformedCount} malformed JSONL line${malformedCount > 1 ? "s" : ""} in kimi output; response may be incomplete.\n`
+    );
   }
 
   const sessionId =
@@ -458,6 +486,7 @@ export function callKimi({
     events,
     toolEvents,
     thinkBlocks: countThinkBlocks(events),
+    malformedCount,
   };
 }
 
@@ -503,6 +532,7 @@ export function callKimiStreaming({
     const events = [];
     const toolEvents = [];
     const textParts = [];
+    let malformedCount = 0;
     let timedOut = false;
 
     const timer = setTimeout(() => {
@@ -523,8 +553,12 @@ export function callKimiStreaming({
     } catch { /* child already exited; close handler will resolve */ }
 
     function processLine(raw) {
-      const ev = parseKimiEventLine(raw);
-      if (!ev) return;
+      const result = parseKimiEventLine(raw);
+      if (!result.ok) {
+        if (result.kind === "malformed") malformedCount++;
+        return;
+      }
+      const ev = result.event;
       events.push(ev);
       if (ev.role === "assistant") {
         const t = extractAssistantText(ev);
@@ -589,18 +623,34 @@ export function callKimiStreaming({
       //   (a) Exit 0 + 0 events     (stream-json format unknown / uncommon dump)
       //   (b) Exit 0 + think-only   (reasoning but no surfaced answer)
       //   (c) Exit 0 + whitespace   (e.g. only "   \n" — visually empty to user)
+      //   (d) Exit 0 + malformed JSONL (stream-json was corrupted mid-line;
+      //       previously silent via null-dropping in parseKimiEventLine —
+      //       codex Phase-5-v0.1-review H3).
       const streamedText = textParts.join("");
       if (!streamedText.trim()) {
+        const malformedNote = malformedCount > 0
+          ? ` (and ${malformedCount} malformed JSONL line${malformedCount > 1 ? "s" : ""} silently dropped)`
+          : "";
         resolve({
           ok: false,
-          error: events.length === 0
+          error: (events.length === 0
             ? "kimi exited 0 but produced no stream-json events"
-            : "kimi produced no visible text (think-only response)",
+            : "kimi produced no visible text (think-only response)") + malformedNote,
           status: KIMI_EXIT.OK,
           events,
           thinkBlocks: countThinkBlocks(events),
+          malformedCount,
         });
         return;
+      }
+
+      // Surface a stderr breadcrumb whenever the stream contained malformed
+      // lines, even if the response itself was usable — helps operators spot
+      // partial corruption before it turns into a quality regression.
+      if (malformedCount > 0) {
+        process.stderr.write(
+          `Warning: ${malformedCount} malformed JSONL line${malformedCount > 1 ? "s" : ""} in kimi stream; response may be incomplete.\n`
+        );
       }
 
       const sessionId =
@@ -614,6 +664,7 @@ export function callKimiStreaming({
         events,
         toolEvents,
         thinkBlocks: countThinkBlocks(events),
+        malformedCount,
       });
     });
 

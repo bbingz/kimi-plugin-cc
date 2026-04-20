@@ -32,7 +32,11 @@ Do NOT attempt to run `kimi login` from a tool call — it's interactive. Tell t
 
 ### All good (`installed: true, authenticated: true`)
 
-Print the full status JSON block to the user so they can see `version`, `model`, `configured_models`, etc. If the user passed `--enable-review-gate` or `--disable-review-gate`, acknowledge — the review-gate state toggle is implemented in Phase 4; for now tell them: "review-gate toggle arrives in Phase 4; your setting is recorded but has no effect yet."
+Print the full status JSON block to the user so they can see `version`, `model`, `configured_models`, etc.
+
+If the user passed `--enable-review-gate` or `--disable-review-gate`, acknowledge the toggle outcome reported by the companion. The review-gate is live (Phase 4): when enabled, every Claude Code `Stop` event (within the 15-min hook budget) runs `kimi` over the session transcript and the plugin's ALLOW/BLOCK sentinel determines whether Claude may stop the conversation. When disabled, the hook is a no-op.
+
+**Escape-hatch note** (surface to the user after `--enable-review-gate`): if they get stuck in a BLOCK loop, they can recover by opening a fresh terminal and running `/kimi:setup --disable-review-gate`, or by directly editing `~/.claude/plugins/kimi/state.json` to set `stopReviewGate: false`.
 
 ### Output rules
 

@@ -3,7 +3,7 @@ name: kimi-result-handling
 description: Internal guidance for presenting Kimi output back to the user
 ---
 
-# kimi-result-handling (Phase 1 early draft)
+# kimi-result-handling
 
 How Claude should render and reason about kimi's output after receiving it from `kimi-companion.mjs`. Applies to all `/kimi:*` commands.
 
@@ -39,16 +39,11 @@ If the companion returns an error status (non-zero exit), show it directly with 
 **Per-command rendering rules live in `references/<command>-render.md`.** Read the matching reference for the command you're rendering:
 
 - `/kimi:ask` → `references/ask-render.md`
-- `/kimi:review` → `references/review-render.md` (lands in Task 3.6)
-- (others will be added as they land in later phases)
+- `/kimi:review` → `references/review-render.md`
+- `/kimi:adversarial-review` → render rules are inlined in the command file (mirrors review-render structure with adversarial framing)
 
 Command files (`plugins/kimi/commands/<name>.md`) remain the authoritative source of truth — the reference docs capture background rationale and cross-command patterns that wouldn't fit in a command file's frontmatter-bounded budget. When a command file and a reference disagree, the command file wins.
 
 ## Chinese/mixed-language output
 
 Kimi often replies in the same language as the prompt. If the user asked in Chinese, do NOT translate the response to English unless they explicitly asked. Quote verbatim. **Do NOT offer translation as an unprompted follow-up** — `/kimi:ask` specifically forbids appending any commentary. If the user later asks "翻译一下" or similar, translate then.
-
-## What still needs Phase 5 work
-
-- Review-findings rendering (severity-sorted, deep-linked file references) — waits for `/kimi:review` (Phase 3).
-- Disagreement-phrasing library across review vs ask contexts.
