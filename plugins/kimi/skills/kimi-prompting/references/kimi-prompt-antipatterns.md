@@ -142,11 +142,27 @@ command (v0.2 backlog) will expose the agent's website-building
 capability explicitly, so users don't have to route through
 `/kimi:rescue` with an awkward prompt.
 
+**How to spot an agent variant in your config:** the plugin's
+`readKimiConfiguredModels()` lists every `[models.*]` section title
+verbatim — it doesn't classify agent vs. chat. As of the K2.6 family
+release, **if the section title (or model display name) contains the
+word `agent` or `swarm`, treat it as the agent variant** and steer
+away from `/kimi:ask` / `/kimi:review`. Common patterns observed in
+published examples:
+
+- `[models."kimi-k2.6-agent"]` — agent
+- `[models."kimi-k2.6-agent-swarm"]` — agent swarm
+- `[models."kimi-k2.6"]` — chat/code (safe for review/ask)
+- `[models."kimi-k2.6-code"]` — chat/code (safe for review/ask)
+- `[models."kimi-for-coding"]` — kimi's "Kimi for Code" rebrand,
+  chat-family (safe)
+
+If the section title is ambiguous (custom provider label, no
+`agent`/`swarm` keyword), check the provider's docs before passing
+`-m` to `/kimi:review`.
+
 **Verify:** if `/kimi:review` output arrives with React/TS code
 blocks, unprompted file scaffolding, or the schema validator
 rejecting a response with a verdict like `"built"` or `"scaffolded"`,
 confirm the model wasn't an agent variant before blaming the prompt.
-`readKimiConfiguredModels()` lists ALL `[models.*]` entries in
-`config.toml` — it doesn't distinguish agent from chat — so the
-`/kimi:setup` report can surface an agent model name without
-flagging it. Operator hygiene, not validator hygiene.
+Operator hygiene, not validator hygiene.

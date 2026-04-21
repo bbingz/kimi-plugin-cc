@@ -2,6 +2,17 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-21 [Claude Opus 4.7 — PR #1 self-review feedback: strict timeout parse + agent-keyword hint]
+
+- **status**: done
+- **scope**: plugins/kimi/scripts/lib/kimi.mjs, plugins/kimi/skills/kimi-prompting/references/kimi-prompt-antipatterns.md, CHANGELOG.md
+- **summary**: PR #1 self-review flagged 2 minor fixable issues (plus 2 wont-fix). Integrated both.
+  - **PR #1 review #2** (lenient `KIMI_TIMEOUT_MS` parse): `Number.parseInt("60s", 10)` returned `60`, accepted as 60ms — footgun for a user who types `KIMI_TIMEOUT_MS=60` expecting 60 seconds. Tightened to `/^\d+$/` pure-digit match; non-matching input now emits a stderr warning naming the offending value + expected format, then falls back to the 900000 ms default. Verified: `60s`, `60.5`, `-5` all warn + fallback; `60000` still works; `0` silently falls back (parses but fails `>0`, same as before — no warning needed since 0 could be an intentional "disable" marker even if we treat it as fallback).
+  - **PR #1 review #3** (ambiguous agent-model detection in antipattern §9): previous doc said "don't pass `-m k2.6-agent`" but didn't tell operators what TOML section title to look for in their `~/.kimi/config.toml`. Added a keyword-spotting rule ("if the section title or display name contains `agent` or `swarm`, treat as agent variant") + 5 worked examples covering the K2.6 family and the "Kimi for Code" rebrand.
+- **Not addressed (PR #1 review #1 + #4 — non-blocking)**: #1 (job id prefix migration visible in `/kimi:status` for users who have pre-existing `gr-*`/`gt-*` jobs) — functionally fine, just visually mixed; no action for v0.1 internal but worth a release note if v0.2 goes public. #4 (`resolveWorkspaceRoot` double-realpath idempotent-no-op when cwd is pre-realpath'd) — short-circuit not worth the complexity; leave as is.
+- **Verification**: `node --check` clean. 6-case parse smoke: `(no env / 60000 / 60s / 60.5 / -5 / 0)` → all expected values + warnings.
+- **next**: force-push commit to PR #1 branch; reply to original review thread with "applied 2 of 4; #1 + #4 wont-fix".
+
 ## 2026-04-21 [Claude Opus 4.7 — self-review follow-up: resolveWorkspaceRoot slug consistency]
 
 - **status**: done

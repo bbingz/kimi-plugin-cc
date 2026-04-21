@@ -34,12 +34,25 @@ export {
 // users would see "Request was interrupted" for what was actually our own
 // premature kill. Default pushed to 15 min; env `KIMI_TIMEOUT_MS` lets
 // operators widen (e.g. for dedicated agent-swarm scenarios) or tighten
-// (tests). Invalid / unparseable env values fall back to the default.
+// (tests).
+//
+// Parsing is STRICT — the env value must be purely digits. `60s` or
+// `60abc` or `60.5` are rejected rather than silently parsed to 60ms
+// (footgun: a user who types `KIMI_TIMEOUT_MS=60` expecting seconds
+// would otherwise get 60ms and think the plugin is insta-timing-out).
+// Invalid values fall back to the default with a stderr hint so the
+// user knows their env was ignored. (PR #1 review #2.)
 function defaultTimeoutMs() {
   const raw = process.env.KIMI_TIMEOUT_MS;
   if (!raw) return 900_000;
+  if (!/^\d+$/.test(raw)) {
+    process.stderr.write(
+      `Warning: KIMI_TIMEOUT_MS=${JSON.stringify(raw)} is not a pure integer (expected digits only, e.g. "60000" for 60 s). Falling back to 900000 ms default.\n`
+    );
+    return 900_000;
+  }
   const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 900_000;
+  return parsed > 0 ? parsed : 900_000;
 }
 const DEFAULT_TIMEOUT_MS = defaultTimeoutMs();
 const AUTH_CHECK_TIMEOUT_MS = 30_000;
