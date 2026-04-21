@@ -110,3 +110,43 @@ path for empty diffs).` Both `buildReviewPrompt` and
 `buildAdversarialPrompt` include this line; `validateReviewOutput`
 enforces the enum. Do not relax the schema to accept `"no_changes"`
 from the LLM — the split contract is intentional.
+
+## 9. Using `K2.6 Agent` / `K2.6 Agent Swarm` models for review or ask
+
+**Observed (2026-04-20, K2.6 release):** Moonshot's K2.6 ships as a
+family — K2.6 (chat/code), **K2.6 Agent** (website + full-stack builder
+specialized in video hero sections, WebGL shaders, GSAP/Framer, React
+19 + shadcn, auth + DB wiring), and **K2.6 Agent Swarm** (multi-agent
+long-horizon orchestration). Users whose `~/.kimi/config.toml` has
+any of these as `[models.*]` entries can pass `-m k2.6-agent` (or
+similar) to `/kimi:ask`, `/kimi:review`, `/kimi:adversarial-review`.
+The agent-family system prior strongly biases toward scaffolding
+files and calling tools — it will read the repo, write generated
+code, and produce React/TS output even when the prompt asks for a
+one-paragraph answer or a strict JSON review. Our `STRICT OUTPUT
+RULES` in `buildReviewPrompt` are prompt-layer constraints; the agent
+system prior overrides them empirically often enough that JSON
+compliance drops sharply.
+
+**Fix:** Do not pass K2.6 Agent / K2.6 Agent Swarm to these commands:
+
+- `/kimi:ask` — use a chat/code model (`K2.6`, `K2.6 Code`, or
+  `kimi-k2.5`)
+- `/kimi:review` — same
+- `/kimi:adversarial-review` — same
+
+Agent-family models are appropriate for `/kimi:rescue` /
+`/kimi:task --background` where the goal IS "go do work, write files,
+invoke tools" — that's the sweet spot. A future `/kimi:scaffold`
+command (v0.2 backlog) will expose the agent's website-building
+capability explicitly, so users don't have to route through
+`/kimi:rescue` with an awkward prompt.
+
+**Verify:** if `/kimi:review` output arrives with React/TS code
+blocks, unprompted file scaffolding, or the schema validator
+rejecting a response with a verdict like `"built"` or `"scaffolded"`,
+confirm the model wasn't an agent variant before blaming the prompt.
+`readKimiConfiguredModels()` lists ALL `[models.*]` entries in
+`config.toml` — it doesn't distinguish agent from chat — so the
+`/kimi:setup` report can surface an agent model name without
+flagging it. Operator hygiene, not validator hygiene.

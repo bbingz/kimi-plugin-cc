@@ -26,7 +26,22 @@ export {
 // ── Constants ──────────────────────────────────────────────
 // All values below are sourced from doc/probe/probe-results.json v3.
 
-const DEFAULT_TIMEOUT_MS = 300_000;
+// Default per-call timeout. K2.6 agent models (released 2026-04-20) can
+// reasonably take >5 min on long-horizon agentic turns, and kimi-cli 1.37
+// explicitly keeps the --print loop alive while background tasks are
+// running (`fix(soul): keep agent loop alive while background tasks are
+// running`). The old 300s ceiling would SIGTERM these into exit 143 and
+// users would see "Request was interrupted" for what was actually our own
+// premature kill. Default pushed to 15 min; env `KIMI_TIMEOUT_MS` lets
+// operators widen (e.g. for dedicated agent-swarm scenarios) or tighten
+// (tests). Invalid / unparseable env values fall back to the default.
+function defaultTimeoutMs() {
+  const raw = process.env.KIMI_TIMEOUT_MS;
+  if (!raw) return 900_000;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 900_000;
+}
+const DEFAULT_TIMEOUT_MS = defaultTimeoutMs();
 const AUTH_CHECK_TIMEOUT_MS = 30_000;
 const PARENT_SESSION_ENV = "KIMI_COMPANION_SESSION_ID";
 const KIMI_BIN = process.env.KIMI_CLI_BIN || "kimi";

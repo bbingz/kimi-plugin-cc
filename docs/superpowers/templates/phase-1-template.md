@@ -43,7 +43,7 @@ Global find-and-replace these 9 tokens when copying this template into a new plu
 
 **Create (repo root):** `.gitignore`, `README.md`, `CLAUDE.md`, `.claude-plugin/marketplace.json`, `plugins/{{LLM}}/.claude-plugin/plugin.json`, `plugins/{{LLM}}/CHANGELOG.md`
 
-**Create (plugin lib):** `plugins/{{LLM}}/scripts/lib/args.mjs`, `process.mjs`, `render.mjs`, `git.mjs`, `state.mjs`
+**Create (plugin lib):** `plugins/{{LLM}}/scripts/lib/args.mjs`, `process.mjs`, `git.mjs`, `state.mjs` — (`render.mjs` was proven dead in v0.1 post-review and is NO LONGER ported; see T.5 below for the deletion notice)
 
 **Create (plugin core):** `plugins/{{LLM}}/scripts/lib/{{LLM}}.mjs` — CLI-specific primitives (spawn + parse + session-id + model config + errors); THIS IS THE PROVIDER-SPECIFIC FILE. Every sibling plugin writes it from scratch.
 
@@ -247,36 +247,35 @@ git commit -m "feat(lib): port state.mjs with {{LLM}} path constants"
 
 ---
 
-## Task T.5: Port `render.mjs` near-verbatim
+## Task T.5: ~~Port `render.mjs`~~ — **DELETED (v0.1 post-review)**
 
-**Files:** `plugins/{{LLM}}/scripts/lib/render.mjs`
+`render.mjs` was ported from gemini-plugin-cc in Phase 1 as "near-verbatim"
+text-output formatting for setup reports, status snapshots, result views,
+and cancel confirmations. **The post-v0.1 review (2026-04-21) proved the
+entire module was dead code**: zero external importers across the whole
+plugin. The functionality lives elsewhere:
 
-Text-output formatting for setup reports, result views, job snapshots. Most output strings are provider-agnostic; a few have "{{LLM_CAP}}" / "{{LLM}}" tokens.
+| Former render.mjs export | Where it lives now |
+|---|---|
+| `renderSetupReport` | `kimi-companion.mjs::formatSetupText` (local) |
+| `renderKimiResult` | not needed — `/kimi:ask` text mode writes response verbatim to stdout |
+| `renderJobSubmitted` | not needed — companion emits `{jobId, pid}` JSON; command `.md` renders |
+| `renderStatusReport` | not needed — `/kimi:status` is JSON-out; command `.md` renders the snapshot |
+| `renderStoredJobResult` | not needed — `/kimi:result` is JSON-out; command `.md` renders |
+| `renderCancelReport` | not needed — `/kimi:cancel` is JSON-out |
 
-- [ ] **Step 1: Copy + rename**
+Additionally, the gemini-era `render.mjs` contained a latent bug
+(`report.gemini.available` — 5-way review P0-1) that would have crashed
+the setup report if ever exercised. Siblings that blind-copied render.mjs
+inherit that bug. **Do NOT create `plugins/{{LLM}}/scripts/lib/render.mjs`.**
 
-```bash
-cp {{KIMI_REPO_ROOT}}/plugins/kimi/scripts/lib/render.mjs plugins/{{LLM}}/scripts/lib/render.mjs
-sed -i '' 's/Kimi/{{LLM_CAP}}/g; s/kimi/{{LLM}}/g' plugins/{{LLM}}/scripts/lib/render.mjs
-```
+**Action for sibling plugin authors:** skip this task entirely. If your
+companion needs text output for humans (e.g. `/{{LLM}}:setup` non-JSON
+mode), write it inline in `{{LLM}}-companion.mjs` — the footer format in
+`formatAskFooter` is a good example (short, local, no indirection).
 
-(macOS sed uses `-i ''`; Linux uses `-i`.)
-
-- [ ] **Step 2: Audit render strings**
-
-```bash
-grep -n "{{LLM}}\|{{LLM_CAP}}" plugins/{{LLM}}/scripts/lib/render.mjs
-```
-
-Verify every hit is a user-facing string (not a comment or import). Fix any false positives.
-
-- [ ] **Step 3: Syntax check + commit**
-
-```bash
-node --check plugins/{{LLM}}/scripts/lib/render.mjs
-git add plugins/{{LLM}}/scripts/lib/render.mjs
-git commit -m "feat(lib): port render.mjs with {{LLM_CAP}} labels"
-```
+If you already ported render.mjs before reading this, see
+`sibling-backport-checklist.md` §P0-1 for the deletion procedure.
 
 ---
 

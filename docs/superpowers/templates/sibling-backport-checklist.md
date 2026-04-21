@@ -23,19 +23,44 @@ To see any specific fix's exact diff: `git show <commit> -- <file>` against kimi
 
 ## P0 — correctness / data loss blockers (backport ASAP)
 
-### P0-1. Fix the dead `<llm>SessionId` field check in `render.mjs`
+### P0-1. ~~Fix the dead `<llm>SessionId` field check in `render.mjs`~~ → **Delete `render.mjs` entirely**
 
-**Problem:** `render.mjs` builds hints for `/kimi:status` output. One branch reads `job.geminiSessionId` — leftover from the gemini-plugin-cc port. The actual field written by `job-control.mjs` is `kimiSessionId`. Result: the "Resume this thread" hint never shows up. The bug was hidden for all of v0.1 because no test covered the hint rendering path.
+**Superseded (2026-04-21 post-v0.1 review):** a full-repo review after the
+phase-5-post-review-3 tag proved `render.mjs` has ZERO external importers
+— every exported function (`renderSetupReport`, `renderKimiResult`,
+`renderJobSubmitted`, `renderStatusReport`, `renderStoredJobResult`,
+`renderCancelReport`) is defined but never called. The original
+`geminiSessionId` field-rename patch (below) fixed a bug in code that
+was never reached in practice. The whole module is now deleted in
+kimi-plugin-cc and `phase-1-template.md` T.5 no longer ports it.
 
-**Action:** grep your own `render.mjs` for any `<wrong-provider>SessionId`:
+**Action for siblings:**
 
 ```bash
-grep -n "SessionId\b" plugins/<llm>/scripts/lib/render.mjs
-# Expect: the only match is job.<llm>SessionId (matching your provider)
-# If you see geminiSessionId or kimiSessionId, rename to <llm>SessionId.
+# If you ported render.mjs from an earlier kimi state or from the original
+# gemini-plugin-cc:
+git rm plugins/<llm>/scripts/lib/render.mjs
+# Then verify nothing imports it:
+grep -rn "render\.mjs\|renderSetupReport\|renderKimiResult\|renderJobSubmitted\|renderStatusReport\|renderStoredJobResult\|renderCancelReport" plugins/<llm>/
+# Expect: no matches (except possibly historical comments in CHANGELOG.md)
 ```
 
-**Verify:** after the fix, create a test task that completes successfully, run `<llm>-companion.mjs status --json`, and confirm the Resume hint appears in the snapshot.
+If the grep finds an importer, that importer is dead code too — remove
+the import + its call site, or (rarely) decide this sibling genuinely
+needs text rendering and port the call site inline into the companion.
+
+**Historical context (for siblings that DO have a working importer and
+want to keep render.mjs alive):** the original gemini-era bug was
+`render.mjs:131 job.geminiSessionId` — the actual field written by
+`job-control.mjs` was `kimiSessionId`. Rename to `<llm>SessionId`. But
+this is no longer the recommended path — the v0.1 cleanup showed the
+right move is to delete the whole module.
+
+**Verify (deletion path):** after deletion, run the sibling's test
+suite / T-checklist and confirm no import errors. `/kimi:status`
+output comes from companion-emitted JSON rendered by the command
+`.md` file; `/kimi:setup` text output comes from companion-local
+`formatSetupText`. Neither path touches render.mjs.
 
 ---
 

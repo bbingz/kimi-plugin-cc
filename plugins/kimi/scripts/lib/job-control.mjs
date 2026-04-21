@@ -28,10 +28,16 @@ const DEFAULT_POLL_INTERVAL_MS = 2_000;  // 2 seconds
 
 // ── Job creation ─────────────────────────────────────────
 
+// Job-id prefix per kind — short, visually distinctive, kimi-branded.
+// The Phase-4 port from gemini-plugin-cc left these as "gr"/"gt"
+// (gemini-review / gemini-task); the post-v0.1 review flagged a
+// user-visible branding leak — a "kimi" plugin should not emit job ids
+// like `gr-lxyz-abc`. Sibling plugins must replace with their own
+// two-letter prefix (see phase-1-template.md T.4 whitelist).
 const JOB_PREFIXES = {
-  review: "gr",
-  "adversarial-review": "gr",
-  task: "gt",
+  review: "kr",
+  "adversarial-review": "kr",
+  task: "kt",
 };
 
 export function createJob({ kind, command, prompt, workspaceRoot, cwd, write = false }) {
@@ -348,7 +354,9 @@ export function getJobKindLabel(job) {
   if (job.kind === "review") return "review";
   if (job.kind === "adversarial-review") return "adversarial";
   if (job.kind === "task") return "task";
-  if (job.kind === "ask") return "ask";
+  // Note: `/kimi:ask` is synchronous and never goes through createJob, so no
+  // "ask" branch is needed — the Phase-4 port carried one over from gemini
+  // defensively; removed post-v0.1 review.
   return "job";
 }
 
