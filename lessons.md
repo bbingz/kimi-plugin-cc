@@ -277,6 +277,93 @@ surface. Run this checklist on every new provider before writing a plan.
 - [ ] Resume-session scope — rehydrates full history / only last turn /
       only session-ID plumbing?
 
+## I. Cross-plugin alignment review responses
+
+Distinct from §G (our own 3-way internal review). This section records
+feedback received from **sibling-plugin maintainers** after they read
+our codebase, with verification results and actions. The first entry
+is from the gemini-plugin-cc maintainer (v0.6.0 baseline) on 2026-04-21.
+
+### I.1 Gemini maintainer alignment report — 2026-04-21
+
+**Source**: `/Users/bing/-Code-/gemini-plugin-cc/docs/alignment/kimi.md`
+(external to this repo; gemini plugin owns the alignment docs). Reviewer
+explicitly invited technical pushback per the `receiving-code-review`
+protocol.
+
+**Verification summary** (every claim grounded in file:line):
+
+| Claim | Verified? | Action |
+|---|---|---|
+| Plugin v0.1.0 | ✅ | — |
+| Command surface 8/9 (no `timing`) | ✅ | — |
+| `review.mjs` extracted as dedicated lib | ✅ (strength) | — |
+| Exit-0-no-events multi-class diagnosis (`kimi.mjs:482-500`) | ✅ (strength) | — |
+| P0 — `appendTimingHistory` is a no-op but `job-control.mjs:254,264` reads `result.timing` anyway | ✅ **verified, dead code with misleading intent** | **Fix**: either delete the read path or wire real cold/ttft/tail埋点. v0.1 choice: delete (honest). |
+| P1 — A-roll detection missing (`stats.models` parse) | ✅ true, but kimi 1.36 `JsonPrinter` drops `StatusUpdate` (probe 04); cannot add without a 1.37 re-probe confirming whether result-event schema now exposes per-model usage | Defer to v0.2 after probe re-run; file as a Phase-6 task |
+| P2 — no `tests/` directory | ✅ | Defer to v0.2; pair with timing work |
+| P3 — `rescue.md` argument-hint uses plugin-specific wording | ✅ | Normalize in this pass |
+
+**Where I disagree or the report was incomplete**:
+
+1. **"推断：你还在从 gemini 骨架 fork 出来的初期阶段"** — the reviewer
+   read `plugins/kimi/CHANGELOG.md` which says "0.1.0 (in progress —
+   Phase 1)". That sub-CHANGELOG is stale; actual progress is v0.1
+   complete + PR #1 merged to main. The authoritative CHANGELOG is at
+   the repo root. **Lesson for us**: two CHANGELOGs are a drift trap —
+   either sync plugin-scoped to reflect current state or deprecate it
+   with a pointer to the root.
+
+2. **"§2 首行噪声截取 ❓ 未确认"** — confirmed **not applicable** to kimi.
+   Gemini CLI v0.37.1 emits a noise prefix before the first `{` on
+   `stream-json`; kimi CLI is clean JSONL from the first byte (probe
+   v3: `top_level_keys_observed: ["role", "content"]` with no noise
+   prefix observation). Our parser doesn't need the `strip-until-first-{`
+   dance — it would be speculative complexity.
+
+3. **"§3 foreground 也生成 job ❓"** — confirmed **absent by design**. Gemini
+   creates a `gfg-` prefix foreground job to unify the timing collection
+   path. We don't collect timing in v0.1, so there's no unified path to
+   feed — a foreground synthetic job would be pure overhead. If/when we
+   do timing in v0.2, this design pattern becomes relevant.
+
+**P1 nuance (A-roll / primary-model attestation)**: reviewer's concern
+is valid (Moonshot does have "requested X, served Y" scenarios at quota
+edges). But the gemini approach (`stats.models` object in `result`
+event) assumes the CLI surfaces per-model accounting. Kimi 1.36's
+`JsonPrinter` drops `StatusUpdate`. Before adopting gemini's `§6.3`
+pattern we need a fresh probe on 1.37 to check whether the drop-path
+changed. If it didn't, A-roll verification reduces to "log `requestedModel`
+only; cannot verify served model" — which is weaker than gemini's
+two-sided check but still worth recording.
+
+**Methodology lesson taken from this review** (added to §D as pit
+worth watching): *a stub that is imported but never produces data is
+worse than no stub.* The `appendTimingHistory` case satisfied the
+Phase-4 import resolver but read like real infrastructure to a reader
+coming in cold. Fix is either connect it or remove it; keeping a
+named function that does nothing invites callers to assume the
+opposite. The gemini reviewer caught this in minutes on first read —
+we'd missed it through 5-way internal review because everyone who
+looked at it already knew it was a stub.
+
+**What I'm giving back to the gemini maintainer** (for next-iteration
+`baseline.md` merge):
+
+1. Primary-model attestation (§6.3 "A-roll") needs a caveat in baseline:
+   the pattern depends on the CLI emitting per-model usage in the
+   `result` event. Not every sibling CLI does. Document this dependency
+   as a prerequisite, not an assumption.
+2. The "stale sub-CHANGELOG" trap is not kimi-specific; whatever gemini
+   does for plugin-scoped vs. repo-root CHANGELOGs should be called out
+   as guidance for siblings (we picked the wrong default by having both).
+3. Our `review.mjs` extraction is a net positive; if gemini wants to
+   refactor, our `callKimiReview` / `callKimiAdversarialReview` →
+   `runReviewPipeline` indirection is the specific shape worth looking
+   at (thin CLI-specific adapters, thick pipeline in shared lib).
+
+---
+
 ## Appendix I: Kimi's actual checklist answers (gemini Phase-5-plan G5)
 
 Sections E and F above are blank checklists for the *next* sibling plugin
