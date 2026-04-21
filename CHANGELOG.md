@@ -2,6 +2,13 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-21 [Claude Opus 4.7 — sibling-backport doc (post-phase-5-post-review-3)]
+
+- **status**: done
+- **scope**: docs/superpowers/templates/sibling-backport-checklist.md (new, 409 lines), CHANGELOG.md
+- **summary**: wrote a 409-line actionable backport checklist for minimax/qwen/doubao plugin authors. Covers all 18 findings from the 5-way review (P0 + P1 + P2), with exact code snippets parameterized on `<llm>`, verification steps per item, and a §Global rule warning against `sed -g s/kimi/<llm>/g` (clobbers FALLBACK_STATE_ROOT_DIR + historical comments). Explicitly callouts the subdir-rename gotcha in P0-7 (siblings must replace `"kimi"` → their own provider name, not leave it).
+- **next**: push to GitHub; minimax author pulls and applies. Future polish passes append to this file's section rather than retroactively renumbering P0/P1/P2.
+
 ## 2026-04-21 [Claude Opus 4.7 — 5-way review polish (phase-5-post-review-3)]
 
 - **status**: done

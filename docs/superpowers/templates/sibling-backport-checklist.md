@@ -1,0 +1,409 @@
+# Sibling-Plugin Backport Checklist (post-v0.1 kimi-plugin-cc fixes)
+
+**For:** authors of `minimax-plugin-cc` / `qwen-plugin-cc` / `doubao-plugin-cc` / any future sibling that forked from kimi-plugin-cc's `phase-1-template.md` OR was copy-based from an earlier kimi state.
+
+**Scope:** the 18 findings integrated at `kimi-plugin-cc` tag `phase-5-post-review-3` (commit `54f2fd0`, 2026-04-21) after a **5-way review** (codex + gemini + kimi + qwen + Claude-self empirical probe). Some fixes are mechanical (1-line); some are semantic invariants you must re-examine in your own provider context.
+
+**Read order:** P0 first (correctness / data loss / architecture), P1 next (contract alignment / docs), P2 last (ergonomic / UX polish). Each entry tells you: *what was broken*, *what to change*, and *how to verify*.
+
+**Reference commits** (all on https://github.com/bbingz/kimi-plugin-cc):
+
+| Fix bundle | Commit | Tag |
+|---|---|---|
+| Phase 5 initial close | `cc10567` | `phase-5-final` |
+| 13-item comprehensive 3-way review polish | `ac1cc5b` | `phase-5-post-review` |
+| 11-item 4-way review polish | `ab8e8a1` | `phase-5-post-review-2` |
+| **18-item 5-way review polish (this doc)** | **`54f2fd0`** | **`phase-5-post-review-3`** |
+
+To see any specific fix's exact diff: `git show <commit> -- <file>` against kimi-plugin-cc.
+
+**Global rule before starting:** do NOT `sed -i 's/kimi/<llm>/g'` globally across your repo. The kimi-plugin-cc code contains legitimate `"kimi-companion"` strings in FALLBACK_STATE_ROOT_DIR, `PARENT_SESSION_ENV` / exit-code constant names with `KIMI_` prefix that are REFERENCED by exports (if you rename only definitions, consumers break), and historical comments that document porting decisions. Use the whitelist approach in §P0-7 below.
+
+---
+
+## P0 — correctness / data loss blockers (backport ASAP)
+
+### P0-1. Fix the dead `<llm>SessionId` field check in `render.mjs`
+
+**Problem:** `render.mjs` builds hints for `/kimi:status` output. One branch reads `job.geminiSessionId` — leftover from the gemini-plugin-cc port. The actual field written by `job-control.mjs` is `kimiSessionId`. Result: the "Resume this thread" hint never shows up. The bug was hidden for all of v0.1 because no test covered the hint rendering path.
+
+**Action:** grep your own `render.mjs` for any `<wrong-provider>SessionId`:
+
+```bash
+grep -n "SessionId\b" plugins/<llm>/scripts/lib/render.mjs
+# Expect: the only match is job.<llm>SessionId (matching your provider)
+# If you see geminiSessionId or kimiSessionId, rename to <llm>SessionId.
+```
+
+**Verify:** after the fix, create a test task that completes successfully, run `<llm>-companion.mjs status --json`, and confirm the Resume hint appears in the snapshot.
+
+---
+
+### P0-2. Close the cancel-during-finalization race in `runWorker`
+
+**Problem:** the foreground worker's write-back sequence was:
+```
+1. listJobs() → check if status === "cancelled", bail if so
+2. writeJobFile()       — writes <jobId>.json
+3. upsertJob()          — state.json mutation
+```
+If `cancelJob()` fires between steps 1 and 2, or 2 and 3, the cancelled state gets clobbered by `completed`/`failed`. Codex H1 + qwen M2 both flagged this.
+
+**Action:** replace the "check + write + upsert" sequence with a single `updateState()` transaction:
+
+```js
+let wasCancelled = false;
+updateState(workspaceRoot, (state) => {
+  const idx = state.jobs.findIndex((j) => j.id === jobId);
+  if (idx < 0) { wasCancelled = true; return; }
+  const current = state.jobs[idx];
+  if (current.status === "cancelled") { wasCancelled = true; return; }
+  // Write result file INSIDE the lock so any reader of final state is
+  // guaranteed to find the result file
+  writeJobFile(workspaceRoot, jobId, { id: jobId, status, exitCode, result: parsedResult, completedAt: now });
+  state.jobs[idx] = { ...current, status, phase, exitCode, pid: null, <llm>SessionId, updatedAt: now };
+});
+if (wasCancelled) { console.log(`\n[${now}] Job ${jobId} was cancelled during execution`); return; }
+```
+
+The streaming worker path (`runStreamingWorker`) already uses this pattern — check yours matches kimi-plugin-cc's ab8e8a1 shape.
+
+**Verify:** start a background task, cancel it just before completion timing, check `<llm>-companion.mjs status --json` shows `cancelled` not `completed`.
+
+---
+
+### P0-3. Unify hook `{ok, reason}` shape with `{ok, error}`
+
+**Problem:** the stop-review-gate hook internally used `{ok: false, reason: "..."}` while the rest of the codebase (errorResult / reviewError) uses `{ok: false, error: "..."}`. Qwen M1 flagged the divergence.
+
+**Action:** in `stop-review-gate-hook.mjs`, rename the internal field:
+- `parseStopReviewOutput`: `{ok, reason: null}` → `{ok, error: null}`, `{ok:false, reason: "..."}` → `{ok:false, error: "..."}`
+- `runStopReview`: same rename
+- Main consumer: `emitDecision({decision: "block", reason: review.error ? ... : ...})` — the **external** Claude Code hook schema still uses `reason` (that's Claude Code's contract, not ours), so only the internal passing changes
+
+**Verify:** `grep -n "reason:" plugins/<llm>/scripts/stop-review-gate-hook.mjs` — all hits should be inside `emitDecision({ decision, reason: ... })`; internal returns use `error`.
+
+---
+
+### P0-4. Strengthen `build<Llm>AdversarialPrompt`'s retry hint
+
+**Problem:** `build<Llm>ReviewPrompt`'s retry block had explicit `do NOT translate them` + `Nothing but the JSON.` wording. The adversarial version dropped both, so adversarial retries were empirically more likely to re-fail on severity-translation or markdown-fence leak.
+
+**Action:** align the adversarial retry hint text to match the review retry hint. Exact string (from kimi 54f2fd0):
+
+```js
+return `${base}
+
+[IMPORTANT] Your previous response failed JSON parsing or schema validation. The error was: ${retryHint}
+Return ONLY the JSON object — no prose, no markdown fence, no commentary before or after. Nothing but the JSON. Use the EXACT English severity strings (critical/high/medium/low) — do NOT translate them.`;
+```
+
+**Verify:** run adversarial review 3 times on a small diff; JSON parse/validate should succeed ≥2 of 3 with at most 1 retry.
+
+---
+
+### P0-5. Add liveness probe + SIGKILL escalation to `cancelJob`
+
+**Problem:** old `cancelJob` sent SIGINT (500ms grace) → SIGTERM, then marked cancelled. Two failures: (a) no up-front liveness probe — if `job.pid` refers to a stale/recycled PID, kimi would kill the wrong process, and (b) no SIGKILL — a worker that ignores SIGTERM stays alive while state says "cancelled".
+
+**Action:** three-step escalation with alive-checks between each step:
+
+```js
+if (job.pid) {
+  const alive = () => { try { process.kill(job.pid, 0); return true; } catch { return false; } };
+  const sendSignal = (sig) => {
+    try { process.kill(-job.pid, sig); return true; }
+    catch { try { process.kill(job.pid, sig); return true; } catch { return false; } }
+  };
+  if (!alive()) {
+    process.stderr.write(`Warning: job ${jobId} PID ${job.pid} is not alive; marking cancelled without signaling.\n`);
+  } else {
+    sendSignal("SIGINT"); sleepSync(500);
+    if (alive()) { sendSignal("SIGTERM"); sleepSync(500); }
+    if (alive()) { sendSignal("SIGKILL"); sleepSync(200); }
+  }
+}
+```
+
+**Verify:** start a task that traps SIGTERM (e.g. wrap the worker in a `trap "" TERM` handler) and verify cancel still terminates within ~1.5s via SIGKILL.
+
+---
+
+### P0-6. "Copy" review.mjs, never cross-import
+
+**Problem:** kimi-plugin-cc's CHANGELOG + lessons.md originally said sibling plugins "import review.mjs verbatim". Gemini flagged the ambiguity — read literally, that implied `import "../../kimi-plugin-cc/..."`, which would break when end users install only your plugin (no kimi-plugin-cc nearby).
+
+**Action:** copy `scripts/lib/review.mjs` verbatim into `plugins/<llm>/scripts/lib/review.mjs`. Your plugin bundle must be self-contained. In your own docs, say "**copy** verbatim," not "import."
+
+---
+
+### P0-7. Plugin-scoped state dir (multi-plugin CLAUDE_PLUGIN_DATA isolation)
+
+**Problem:** in a live Claude Code session with multiple plugins installed, `CLAUDE_PLUGIN_DATA` is shared across all plugins. When kimi's state.mjs wrote to `<CLAUDE_PLUGIN_DATA>/state/<workspace-slug>/state.json`, gemini / codex / qwen companions wrote to the same file. Empirically observed during the 5-way-review probe (single state.json with 13 jobs, mixed `geminiSessionId` / `kimiSessionId` / `write:true` fields from different providers). Consequences: kimi's `pruneJobs` (50-cap) would evict other plugins' jobs; `cleanupOrphanedFiles` would delete their log files.
+
+**Action:** in your `state.mjs`, change `stateRootDir`:
+
+```js
+export function stateRootDir() {
+  const pluginData = process.env[PLUGIN_DATA_ENV];
+  if (pluginData) {
+    // Plugin-scoped subdir. MUST NOT collapse back to "state" alone —
+    // CLAUDE_PLUGIN_DATA is shared across plugins in multi-plugin sessions.
+    return path.join(pluginData, "<llm>", "state");  // your provider name here
+  }
+  return FALLBACK_STATE_ROOT_DIR;
+}
+```
+
+**Critical:** the subdir name must be your provider identifier, NOT the literal string `"kimi"` (otherwise minimax's state lands at `<data>/kimi/state/` and collides with kimi's). If you're auditing from my phase-1-template version, the template says `path.join(pluginData, "kimi", "state")` verbatim — you must replace that `"kimi"` → `"<llm>"` when instantiating.
+
+**Verify:** after the fix, start kimi + minimax companions simultaneously in the same workspace. Run `<llm>-companion.mjs status` — each plugin sees only its own jobs. `ls $CLAUDE_PLUGIN_DATA/` shows `kimi/` and `minimax/` subdirs.
+
+**Backwards compat:** existing jobs at the old path are lost after this change. Acceptable — document in lessons.md that upgrading to this shape is a one-time reset.
+
+---
+
+## P1 — contract alignment / docs (do within the week)
+
+### P1-8. Template `errorResult` signature — add `status` + `stdout` fields
+
+**Problem:** `phase-1-template.md` T.6 specified `errorResult({ error, events = [], textParts = [] })`. But `review.mjs`'s `reviewError` expects `transportError.status` to propagate exit codes. If your `<llm>.mjs` implements `errorResult` per the old signature, every review failure produces `status: null` and exit code propagation breaks.
+
+**Action:** your `<llm>.mjs` `errorResult` must include `status` + `stdout`:
+
+```js
+export function errorResult({ status = null, error, stdout = "", events = [], textParts = [] }) {
+  // ... status propagates via transportError.status; include partialResponse
+  // derived from stdout/events so debug consumers can see what <llm> produced
+}
+```
+
+Downstream `review.mjs` `reviewError` already reads `transportError.status ?? null` — the top-level `status` exists so other consumers (ask / task exit code) can read it directly.
+
+---
+
+### P1-9. Rename path constants in `state.mjs` with a WHITELIST, not global sed
+
+**Problem:** the template's T.4 step told you to `sed -i '' 's/kimi/{{LLM}}/g'` on state.mjs. That clobbers legitimate strings: `FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "kimi-companion")` becomes `"<llm>-companion"` (that's actually fine!), but historical comments ("Gemini's state.mjs… Kimi has no equivalent…") get mangled into nonsense, and intentional references to kimi-plugin-cc context are lost.
+
+**Action:** targeted edits only:
+
+1. `path.join(pluginData, "kimi", "state")` → `path.join(pluginData, "<llm>", "state")` — P0-7 above
+2. `FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "kimi-companion")` → `path.join(os.tmpdir(), "<llm>-companion")`
+3. Leave all comments + doc-strings intact — they document porting decisions
+
+**Verify:** `grep -n '"kimi' plugins/<llm>/scripts/lib/state.mjs` — should return zero hits, OR only hits inside comments.
+
+---
+
+### P1-10. Exit-code taxonomy doc — add 124
+
+**Problem:** `<llm>-cli-runtime/SKILL.md`'s exit-code table originally listed 0/1/2/130/143. After kimi added `KIMI_STATUS_TIMED_OUT = 124` for local-timeout disambiguation (distinct from SIGTERM 143), the doc went stale.
+
+**Action:** add a row:
+
+```markdown
+| 124 | Local timeout (companion-enforced) — child spawned but exceeded `<LLM>_STATUS_TIMED_OUT` budget, or background worker exceeded `spawnSync` 600s timeout | "<llm> timed out after Xs" |
+```
+
+Update any render code that currently treats 124 as an unknown code.
+
+---
+
+### P1-11. Command `rescue.md` — add an error-handling block
+
+**Problem:** ask.md / review.md / adversarial-review.md / setup.md all had structured error-handling sections in their frontmatter. rescue.md only said "Return the companion stdout verbatim" — leaving Claude unguided when the subagent's Bash call exited non-zero. Gemini M2.
+
+**Action:** add this block (adjust `<llm>` throughout):
+
+```markdown
+Error handling:
+
+**If the subagent's Bash call exits non-zero**:
+1. Present `stderr` verbatim to the user.
+2. If `stdout` has structured JSON, show that too.
+3. Map the exit code via the <llm>-cli-runtime skill's exit-code table:
+   - `124` → local timeout (worker exceeded 600s budget)
+   - `130` → user-initiated SIGINT
+   - `143` → SIGTERM (external kill, not local timeout)
+   - `1` → resume-mismatch OR generic failure
+   - `2` → usage error (bad flag)
+4. Add one declarative suggestion based on exit code:
+   - `124` → "The task timed out. Split into smaller pieces or use --background."
+   - `130`/`143` → "The request was interrupted. Retry when ready."
+   - resume-mismatch → "<llm> started a fresh session; prior context was not carried over."
+   - `1` other → "Run `/<llm>:setup` to verify CLI + model, then retry."
+5. Do NOT retry automatically.
+```
+
+---
+
+## P2 — ergonomic / UX / diagnostic polish (nice to have)
+
+### P2-12. Distinguish `role: "system"` events from "think-only"
+
+**Problem:** when `<llm>.mjs` parsed stream-json and got an event with `role: "system"`, it neither accumulated text nor counted toward tools. The empty-text guard then mis-classified the run as "think-only response."
+
+**Action:** in `parse<Llm>Stdout` + the streaming `processLine`, add a counter:
+
+```js
+} else if (ev.role) {
+  unexpectedRoleCount++;
+}
+```
+
+And branch the empty-text error message:
+
+```js
+const baseMsg =
+  events.length === 0
+    ? "<llm> exited 0 but produced no stream-json events"
+    : (unexpectedRoleCount > 0 && toolEvents.length === 0 && countThinkBlocks(events) === 0)
+      ? `<llm> produced only unexpected-role events (${unexpectedRoleCount} events with no assistant/tool role)`
+      : "<llm> produced no visible text (think-only response)";
+```
+
+Return `unexpectedRoleCount` in both the success and failure shapes so downstream observability can track it.
+
+---
+
+### P2-13. Extend `cleanupOrphanedFiles` to strip `.config.json` suffix + sweep `state.json.tmp-*`
+
+**Problem:** `cleanupOrphanedFiles` only stripped `.json` and `.log` suffixes when matching job IDs. `<jobId>.config.json` (stream-worker config files) got mis-correlated as orphans and swept. Also, `atomicWriteFileSync` can leak `state.json.tmp-<pid>-<ts>` files if the process is killed between write and rename; no sweeper touched them.
+
+**Action:** two extensions:
+
+```js
+const id = file
+  .replace(/\.config\.json$/, "")
+  .replace(/\.(json|log)$/, "");
+```
+
+And add (after the jobs-dir scan):
+
+```js
+const stateDir = resolveStateDir(workspaceRoot);
+try {
+  const stateFile = resolveStateFile(workspaceRoot);
+  const stateFileBase = path.basename(stateFile);
+  const cutoff = Date.now() - 60_000;
+  for (const file of fs.readdirSync(stateDir)) {
+    if (!file.startsWith(`${stateFileBase}.tmp-`)) continue;
+    try {
+      const stat = fs.statSync(path.join(stateDir, file));
+      if (stat.mtimeMs < cutoff) removeFileIfExists(path.join(stateDir, file));
+    } catch { /* stale already removed */ }
+  }
+} catch { /* stateDir may not exist yet */ }
+```
+
+---
+
+### P2-14. Align prompt recipes with actual `build<Llm>ReviewPrompt` shape
+
+**Problem:** `<llm>-prompt-recipes.md` Review example showed `<schema>{{REVIEW_SCHEMA}}</schema>` — but the actual `build<Llm>ReviewPrompt` function uses a ```` ```json ```` fence around the schema. Siblings reading the recipe and writing their prompts would mismatch.
+
+**Action:** update the recipe's `<schema>` wrapper to a `json` fence:
+
+````markdown
+```json
+{{REVIEW_SCHEMA}}
+```
+````
+
+---
+
+### P2-15. Exit non-zero on `--resume` UUID mismatch
+
+**Problem:** `--resume <uuid>` that didn't match the returned session resulted in a stderr warning + exit 0. User would see the answer and assume context carried over.
+
+**Action:** in `runAsk` (or your equivalent), track whether a mismatch happened:
+
+```js
+let resumeMismatched = false;
+if (callArgs.resumeSessionId && result.ok && result.sessionId &&
+    result.sessionId !== callArgs.resumeSessionId) {
+  process.stderr.write(`Warning: requested --resume ${callArgs.resumeSessionId} did not match returned session ${result.sessionId}; <llm> likely started a fresh session and prior context was not carried over.\n`);
+  resumeMismatched = true;
+}
+process.exit(result.ok ? (resumeMismatched ? 1 : <LLM>_EXIT.OK) : (result.status ?? 1));
+```
+
+The response still prints to stdout — user sees the answer — but the non-zero exit nudges Claude's render to flag the continuity failure.
+
+---
+
+### P2-16. `loadState` should warn on parse failure (not silently fall back to default)
+
+**Problem:** if the user's state.json is corrupted (manual edit, disk error, race from a buggy third-party), `loadState` silently returned `defaultState()`. Job history vanished without a clue.
+
+**Action:** track the last error + file existence; emit a stderr warning when the file existed but parsing failed:
+
+```js
+if (fileExists && lastError) {
+  process.stderr.write(
+    `Warning: <llm> state file ${file} is unreadable (${lastError.message}); job history reset to defaults.\n`
+  );
+}
+return defaultState();
+```
+
+Don't emit for `ENOENT` — that's the normal first-run case.
+
+---
+
+### P2-17. Parameterize `TRUNCATION_NOTICE` / `RETRY_NOTICE` in `runReviewPipeline`
+
+**Problem:** `review.mjs` had `TRUNCATION_NOTICE` hardcoded to "150 KB" and `RETRY_NOTICE` hardcoded. If your provider uses a smaller context window and you override `MAX_REVIEW_DIFF_BYTES`, the notice string lies.
+
+**Action:** already done in review.mjs if you copied verbatim from 54f2fd0. `runReviewPipeline` now accepts:
+
+```js
+runReviewPipeline({
+  ...,
+  truncationNotice: formatTruncationNotice(50_000),  // your budget
+  retryNotice: "(Our first response was malformed; the retry succeeded.)",  // if you want provider-specific wording
+});
+```
+
+Plus a new exported helper:
+
+```js
+export function formatTruncationNotice(maxDiffBytes) {
+  const budgetKb = Math.round(maxDiffBytes / 1000);
+  return TRUNCATION_NOTICE_TEMPLATE.replace("{BUDGET_KB}", String(budgetKb));
+}
+```
+
+---
+
+### P2-18. Broaden `<llm>-result-handling` rule #3 scope
+
+**Problem:** the "Never auto-execute" rule originally listed `/kimi:ask` and `/kimi:review`. That's narrower than reality — EVERY `/<llm>:*` command emits output Claude must not interpret as shell. Kimi L4.
+
+**Action:** rewrite the scope note:
+
+```markdown
+> **Note on rule #3 scope**: "Never auto-execute" is a presentation-layer policy, not a sandbox. <Llm>'s free-text output is rendered as-is; the companion does not parse imperatives, and Claude Code's command parser does not scan `/<llm>:*` output as shell. This applies to **all** `/<llm>:*` commands. The one exception: `/<llm>:rescue` may return structured `tool_call` events (e.g. `apply_patch`) which the companion forwards as tool events, not free-text imperatives — those are a distinct channel with their own authorization model.
+```
+
+---
+
+## Verification checklist (before tagging your sibling's post-backport state)
+
+- [ ] `grep -rn "geminiSessionId\|kimiSessionId" plugins/<llm>/` — only your provider's field name matches
+- [ ] Full T-checklist: setup, ask, review, adversarial-review, rescue (foreground + background), cancel mid-stream
+- [ ] `<llm>-companion.mjs status --json` after a cancelled task shows `status: "cancelled"`, not `completed`
+- [ ] Adversarial review on a small diff produces summary matching the red-team regex `/do not ship|blocks|unsafe|reject/i`
+- [ ] `<llm>-companion.mjs review --scope bogus` exits 2 with structured JSON error (not 0)
+- [ ] `stateRootDir()` resolves to `<CLAUDE_PLUGIN_DATA>/<llm>/state/`, NOT `<CLAUDE_PLUGIN_DATA>/state/`
+- [ ] Install the plugin in a fresh Claude Code session that also has kimi-plugin-cc installed, run one task from each, verify neither plugin shows the other's jobs in `/<llm>:status`
+- [ ] `grep -n '"kimi\b' plugins/<llm>/` — zero hits outside intentional comments
+
+---
+
+## Maintenance note
+
+This doc captures the state of post-phase-5 polish in kimi-plugin-cc. Future kimi fixes may add to this list. When kimi tags a new `phase-N-post-review-M`, diff against the previous tag and append any new backport items below. Don't retroactively rewrite P0/P1/P2 labels — they're calibrated to the risk *at time of discovery*, which is useful archaeology.
+
+Last updated: 2026-04-21, reflecting kimi-plugin-cc commit `54f2fd0` (tag `phase-5-post-review-3`).
