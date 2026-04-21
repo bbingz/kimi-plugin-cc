@@ -50,7 +50,7 @@ function parseStopReviewOutput(rawOutput) {
   if (!text) {
     return {
       ok: false,
-      reason: "The stop-time Kimi review returned no output. Run /kimi:review --wait manually or bypass the gate.",
+      error: "The stop-time Kimi review returned no output. Run /kimi:review --wait manually or bypass the gate.",
     };
   }
   // Scan ALL lines for the ALLOW/BLOCK sentinel (gemini v1-review G-C1:
@@ -62,15 +62,15 @@ function parseStopReviewOutput(rawOutput) {
   // expected bias (see template).
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
-    if (trimmed.startsWith("ALLOW:")) return { ok: true, reason: null };
+    if (trimmed.startsWith("ALLOW:")) return { ok: true, error: null };
     if (trimmed.startsWith("BLOCK:")) {
-      const reason = trimmed.slice("BLOCK:".length).trim() || text;
-      return { ok: false, reason: `Kimi stop-time review found issues: ${reason}` };
+      const detail = trimmed.slice("BLOCK:".length).trim() || text;
+      return { ok: false, error: `Kimi stop-time review found issues: ${detail}` };
     }
   }
   return {
     ok: false,
-    reason: "The stop-time Kimi review returned an unexpected answer (no ALLOW/BLOCK sentinel found). Run /kimi:review --wait manually or bypass the gate.",
+    error: "The stop-time Kimi review returned an unexpected answer (no ALLOW/BLOCK sentinel found). Run /kimi:review --wait manually or bypass the gate.",
   };
 }
 
@@ -82,13 +82,13 @@ function runStopReview(cwd, input = {}) {
   });
 
   if (result.error?.code === "ETIMEDOUT") {
-    return { ok: false, reason: "The stop-time Kimi review timed out after 15 minutes." };
+    return { ok: false, error: "The stop-time Kimi review timed out after 15 minutes." };
   }
   if (result.status !== 0) {
     const detail = String(result.stderr || result.stdout || "").trim();
     return {
       ok: false,
-      reason: detail ? `The stop-time Kimi review failed: ${detail}` : "The stop-time Kimi review failed.",
+      error: detail ? `The stop-time Kimi review failed: ${detail}` : "The stop-time Kimi review failed.",
     };
   }
 
@@ -98,11 +98,11 @@ function runStopReview(cwd, input = {}) {
     if (jsonStart >= 0) {
       const payload = JSON.parse(stdout.slice(jsonStart));
       if (payload.response) return parseStopReviewOutput(payload.response);
-      if (payload.error) return { ok: false, reason: payload.error };
+      if (payload.error) return { ok: false, error: payload.error };
     }
   } catch { /* fall through */ }
 
-  return { ok: false, reason: "The stop-time Kimi review returned invalid output." };
+  return { ok: false, error: "The stop-time Kimi review returned invalid output." };
 }
 
 function main() {
@@ -124,9 +124,15 @@ function main() {
 
   const review = runStopReview(cwd, input);
   if (!review.ok) {
+    // Internal `{ok, error}` shape aligned with `reviewError` / `errorResult`
+    // per qwen 5-way-review M1 (previously used `{ok, reason}` which diverged
+    // from the rest of the codebase). The Claude Code hook protocol still
+    // expects `{decision, reason}` on stdout, so we emit `reason: review.error`
+    // at the boundary — internal shape is unified, external contract is
+    // preserved.
     emitDecision({
       decision: "block",
-      reason: runningNote ? `${runningNote} ${review.reason}` : review.reason,
+      reason: runningNote ? `${runningNote} ${review.error}` : review.error,
     });
     return;
   }

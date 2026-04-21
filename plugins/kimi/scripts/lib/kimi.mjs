@@ -262,17 +262,19 @@ export function extractAssistantText(event) {
 }
 
 // Parse a multi-line stdout buffer into { events, assistantText, toolEvents,
-// malformedCount }. Multi-line support is required (probe 01/codex Q2:
-// single run may emit several JSONL lines when tool use is present).
-// `malformedCount` surfaces the number of lines that looked like JSON but
-// failed parse — callers can distinguish "kimi produced nothing" (count 0,
-// empty result) from "kimi produced corrupted stream-json" (count > 0)
-// for diagnostic purposes (codex Phase-5-v0.1-review H3).
+// malformedCount, unexpectedRoleCount }. Multi-line support is required
+// (probe 01/codex Q2: single run may emit several JSONL lines when tool use
+// is present). `malformedCount` surfaces lines that looked like JSON but
+// failed parse; `unexpectedRoleCount` surfaces events that parsed fine but
+// had a role other than `assistant`/`tool` (e.g. `system` — codex 5-way-
+// review L2). The two counts let callers distinguish four empty-text modes:
+// (a) no events, (b) think-only, (c) corrupted JSONL, (d) only-system-roles.
 export function parseKimiStdout(stdout) {
   const events = [];
   const toolEvents = [];
   const textParts = [];
   let malformedCount = 0;
+  let unexpectedRoleCount = 0;
   for (const raw of (stdout || "").split("\n")) {
     const result = parseKimiEventLine(raw);
     if (!result.ok) {
@@ -286,9 +288,11 @@ export function parseKimiStdout(stdout) {
       if (t) textParts.push(t);
     } else if (ev.role === "tool") {
       toolEvents.push(ev);
+    } else if (ev.role) {
+      unexpectedRoleCount++;
     }
   }
-  return { events, assistantText: textParts.join(""), toolEvents, malformedCount };
+  return { events, assistantText: textParts.join(""), toolEvents, malformedCount, unexpectedRoleCount };
 }
 
 // ── Session id extraction (spec §3.4) ──────────────────────
@@ -442,29 +446,35 @@ export function callKimi({
     });
   }
 
-  const { events, assistantText, toolEvents, malformedCount } = parseKimiStdout(result.stdout);
+  const { events, assistantText, toolEvents, malformedCount, unexpectedRoleCount } = parseKimiStdout(result.stdout);
 
   // ── No-visible-text guard (gemini G1 + codex Phase-2-review M3 trim) ──
   // If assistant produced no visible text OR only whitespace, treat as
-  // failure regardless of event count. Catches four silent-failure modes:
-  //   (a) Exit 0 + 0 events     (stream-json format unknown / uncommon dump)
-  //   (b) Exit 0 + think-only   (reasoning but no surfaced answer)
-  //   (c) Exit 0 + whitespace   (e.g. only "   \n" — visually empty to user)
+  // failure regardless of event count. Catches five silent-failure modes:
+  //   (a) Exit 0 + 0 events       (stream-json format unknown / uncommon dump)
+  //   (b) Exit 0 + think-only     (reasoning but no surfaced answer)
+  //   (c) Exit 0 + whitespace     (e.g. only "   \n" — visually empty to user)
   //   (d) Exit 0 + malformed JSONL (corrupted stream — codex Phase-5 H3)
+  //   (e) Exit 0 + only system events (codex 5-way-review L2)
   if (!assistantText.trim()) {
     const malformedNote = malformedCount > 0
       ? ` (and ${malformedCount} malformed JSONL line${malformedCount > 1 ? "s" : ""} silently dropped)`
       : "";
+    const baseMsg =
+      events.length === 0
+        ? "kimi exited 0 but produced no stream-json events"
+        : (unexpectedRoleCount > 0 && toolEvents.length === 0 && countThinkBlocks(events) === 0)
+          ? `kimi produced only unexpected-role events (${unexpectedRoleCount} events with no assistant/tool role)`
+          : "kimi produced no visible text (think-only response)";
     return {
       ok: false,
-      error: (events.length === 0
-        ? "kimi exited 0 but produced no stream-json events"
-        : "kimi produced no visible text (think-only response)") + malformedNote,
+      error: baseMsg + malformedNote,
       status: KIMI_EXIT.OK,
       rawStdout: (result.stdout || "").slice(0, 2000),
       events,
       thinkBlocks: countThinkBlocks(events),
       malformedCount,
+      unexpectedRoleCount,
     };
   }
 
@@ -533,6 +543,7 @@ export function callKimiStreaming({
     const toolEvents = [];
     const textParts = [];
     let malformedCount = 0;
+    let unexpectedRoleCount = 0;
     let timedOut = false;
 
     const timer = setTimeout(() => {
@@ -565,6 +576,8 @@ export function callKimiStreaming({
         if (t) textParts.push(t);
       } else if (ev.role === "tool") {
         toolEvents.push(ev);
+      } else if (ev.role) {
+        unexpectedRoleCount++;
       }
       try { onEvent(ev); } catch { /* callback errors don't break us */ }
     }
@@ -631,15 +644,20 @@ export function callKimiStreaming({
         const malformedNote = malformedCount > 0
           ? ` (and ${malformedCount} malformed JSONL line${malformedCount > 1 ? "s" : ""} silently dropped)`
           : "";
+        const baseMsg =
+          events.length === 0
+            ? "kimi exited 0 but produced no stream-json events"
+            : (unexpectedRoleCount > 0 && toolEvents.length === 0 && countThinkBlocks(events) === 0)
+              ? `kimi produced only unexpected-role events (${unexpectedRoleCount} events with no assistant/tool role)`
+              : "kimi produced no visible text (think-only response)";
         resolve({
           ok: false,
-          error: (events.length === 0
-            ? "kimi exited 0 but produced no stream-json events"
-            : "kimi produced no visible text (think-only response)") + malformedNote,
+          error: baseMsg + malformedNote,
           status: KIMI_EXIT.OK,
           events,
           thinkBlocks: countThinkBlocks(events),
           malformedCount,
+          unexpectedRoleCount,
         });
         return;
       }
@@ -694,10 +712,14 @@ export function buildAdversarialPrompt({ context, focus, schemaPath, retryHint =
   if (!retryHint) return base;
   // Retry hint lives outside the XML tags — the template is a fixed artifact,
   // and kimi's correction attention is on the final paragraph regardless.
+  // Strengthened to match `buildReviewPrompt` retry block (kimi 5-way-review
+  // M1): adversarial retries were empirically more likely to re-fail because
+  // the hint lacked the explicit anti-translation reminder and the absolute
+  // "Nothing but the JSON" wording.
   return `${base}
 
 [IMPORTANT] Your previous response failed JSON parsing or schema validation. The error was: ${retryHint}
-Return ONLY the JSON object — no prose, no markdown fence, no commentary before or after. Use the EXACT English severity strings (critical/high/medium/low).`;
+Return ONLY the JSON object — no prose, no markdown fence, no commentary before or after. Nothing but the JSON. Use the EXACT English severity strings (critical/high/medium/low) — do NOT translate them.`;
 }
 
 export function buildReviewPrompt({ context, focus, schemaPath, retryHint = null }) {

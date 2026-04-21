@@ -41,3 +41,26 @@ Operating rules:
 - Do not ask the subagent to inspect files, monitor progress, poll status, or do follow-up work.
 - If the user did not supply a request AND `--resume-last` is present, proceed with the default continue prompt (the task runtime handles this).
 - If the user did not supply a request AND no `--resume-last`, ask what Kimi should investigate or fix.
+
+Error handling (gemini 5-way-review M2):
+
+**If the subagent's Bash call exits non-zero**:
+1. Present `stderr` verbatim to the user.
+2. If `stdout` has structured JSON (status report / partial output), show that too.
+3. Map the exit code via the kimi-cli-runtime skill's exit-code table:
+   - `124` → local timeout (worker exceeded the 600s budget)
+   - `130` → user-initiated SIGINT (cancelled)
+   - `143` → SIGTERM (external kill, not local timeout — distinct per codex M1)
+   - `1` → resume-mismatch OR generic kimi failure (check stderr for the "requested --resume X did not match returned session Y" warning to disambiguate)
+   - `2` → usage error (bad flag)
+4. Add **one declarative suggestion** based on the exit code (same templates as `ask.md`):
+   - `124` → "The task timed out. Split into smaller pieces or use --background for longer budgets."
+   - `130`/`143` → "The request was interrupted. Retry when ready."
+   - resume-mismatch → "Kimi started a fresh session; prior context was not carried over. Retry without --resume-last or accept the fresh thread."
+   - `1` other → "Run `/kimi:setup` to verify kimi CLI + model, then retry."
+   - `2` → Show stderr verbatim; no suggestion.
+5. Do NOT retry automatically. The user decides.
+
+**If background mode was used and the Agent call itself succeeded** but returned a jobId:
+- Acknowledge `Job <id> submitted.` and advise `Check /kimi:status for progress; /kimi:result <id> when done.`
+- Do NOT poll status in the current response.

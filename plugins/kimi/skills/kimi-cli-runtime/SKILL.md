@@ -54,9 +54,10 @@ These constants are the direct result of Phase 0 probes + codex source-read. Do 
 |---|---|---|
 | 0 | Success | (parse JSONL, render response) |
 | 1 | `LLMNotSet` (unknown model name) | "Model `<X>` not configured in ~/.kimi/config.toml" |
-| 2 | Click usage error (bad `-w`, bad flag) | Show stderr error box verbatim |
+| 2 | Click usage error (bad `-w`, bad flag) OR `--scope` enum mismatch (qwen H2 companion-side) | Show stderr error box verbatim |
+| 124 | Local timeout (companion-enforced) — child spawned but exceeded `KIMI_STATUS_TIMED_OUT` budget, or background worker exceeded `spawnSync` 600s timeout | "kimi timed out after Xs" |
 | 130 | SIGINT | "Cancelled by user" |
-| 143 | SIGTERM | "Request was interrupted" |
+| 143 | SIGTERM (external kill; distinct from 124 local timeout per codex 5-way-review M1) | "Request was interrupted" |
 | other | Internal | Show exit code + stderr first 200 chars |
 
 ## Assistant text extraction contract (for Phase 2+)

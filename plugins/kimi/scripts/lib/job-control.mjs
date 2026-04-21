@@ -151,37 +151,50 @@ export function runWorker(jobId, workspaceRoot, companionScript, args) {
     }
   }
 
-  // Check if job was cancelled while running — don't overwrite cancel state
-  const currentJobs = listJobs(workspaceRoot);
-  const currentJob = currentJobs.find((j) => j.id === jobId);
-  if (currentJob?.status === "cancelled") {
+  // Cancel race fix (codex 5-way-review H1 + qwen M2): previously this
+  // routine read current state, wrote the result file, then called
+  // upsertJob — cancel could slip in between the read check and either
+  // write, causing completed/failed to clobber a just-set cancelled.
+  // Merge the read-check-write into a single updateState transaction so
+  // the race window is fully inside one lock.
+  const kimiSessionId = parsedResult?.sessionId || null;
+  let wasCancelled = false;
+  updateState(workspaceRoot, (state) => {
+    const idx = state.jobs.findIndex((j) => j.id === jobId);
+    if (idx < 0) {
+      // Job was pruned from state; log and bail without writing.
+      wasCancelled = true;
+      return;
+    }
+    const current = state.jobs[idx];
+    if (current.status === "cancelled") {
+      wasCancelled = true;
+      return;
+    }
+    // Write the job result file BEFORE committing state so a reader of the
+    // final state record is guaranteed to find its result file.
+    writeJobFile(workspaceRoot, jobId, {
+      id: jobId,
+      status,
+      exitCode,
+      result: parsedResult,
+      completedAt: now,
+    });
+    state.jobs[idx] = {
+      ...current,
+      status,
+      phase,
+      exitCode,
+      pid: null,
+      kimiSessionId,
+      updatedAt: now,
+    };
+  });
+  if (wasCancelled) {
     console.log(`\n[${now}] Job ${jobId} was cancelled during execution`);
     return;
   }
 
-  // Extract Gemini session ID for thread resumption
-  const kimiSessionId = parsedResult?.sessionId || null;
-
-  // Persist result
-  writeJobFile(workspaceRoot, jobId, {
-    id: jobId,
-    status,
-    exitCode,
-    result: parsedResult,
-    completedAt: now,
-  });
-
-  // Update job state
-  upsertJob(workspaceRoot, {
-    id: jobId,
-    status,
-    phase,
-    exitCode,
-    pid: null,
-    kimiSessionId,
-  });
-
-  // Log completion
   console.log(`\n[${now}] Job ${jobId} ${status} (exit ${exitCode})`);
 }
 
@@ -529,26 +542,43 @@ export function cancelJob(workspaceRoot, jobId) {
     return { cancelled: false, reason: `Job is ${job.status}, not cancellable` };
   }
 
-  // Kill the process — try SIGINT first (graceful), then SIGTERM
+  // Three-step signal escalation with up-front liveness probe
+  // (codex 5-way-review M1): SIGINT → SIGTERM → SIGKILL. Each step
+  // checks `kill(pid, 0)` liveness; once the worker is gone we stop.
+  // The up-front probe prevents sending any signal to a stale PID that
+  // the OS might have reused for an unrelated process. (Perfect
+  // identity-match requires OS-specific PID-birth-time heuristics and
+  // is left for v0.2.)
   if (job.pid) {
-    try {
-      process.kill(-job.pid, "SIGINT");
-    } catch {
-      try {
-        process.kill(job.pid, "SIGINT");
-      } catch {
-        // Process already gone
+    const alive = () => {
+      try { process.kill(job.pid, 0); return true; }
+      catch { return false; }
+    };
+    const sendSignal = (sig) => {
+      // Try process-group kill first (detached workers spawn with their
+      // own pgid so this hits the worker + kimi child + any intermediate
+      // shells in one go), fall back to direct PID kill.
+      try { process.kill(-job.pid, sig); return true; }
+      catch {
+        try { process.kill(job.pid, sig); return true; }
+        catch { return false; }
       }
-    }
-    // Give it a moment to clean up, then force kill
-    sleepSync(500);
-    try {
-      process.kill(job.pid, 0); // check if alive
-      try { process.kill(-job.pid, "SIGTERM"); } catch {
-        try { process.kill(job.pid, "SIGTERM"); } catch { /* gone */ }
+    };
+    if (!alive()) {
+      // Stale PID — record "cancelled" without signaling anything to
+      // avoid the PID-reuse footgun.
+      process.stderr.write(`Warning: job ${jobId} PID ${job.pid} is not alive; marking cancelled without signaling.\n`);
+    } else {
+      sendSignal("SIGINT");
+      sleepSync(500);
+      if (alive()) {
+        sendSignal("SIGTERM");
+        sleepSync(500);
+        if (alive()) {
+          sendSignal("SIGKILL");
+          sleepSync(200); // brief grace for the OS to reap
+        }
       }
-    } catch {
-      // Already dead — good
     }
   }
 

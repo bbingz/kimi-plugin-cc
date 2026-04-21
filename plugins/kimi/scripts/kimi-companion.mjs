@@ -295,15 +295,28 @@ async function runAsk(rawArgs) {
   // Step 6 "reverse WARN" documented this). When the user explicitly asked to
   // resume a specific sid but got a different one back, flag it — otherwise
   // they'd see a valid-looking footer and assume their context carried over.
+  // Post-5-way-review: exit non-zero (qwen M3) so Claude's render layer
+  // surfaces the mismatch as a "something went wrong" signal rather than
+  // quietly succeeding — the answer is valid but the continuity contract
+  // the user asked for is broken.
+  let resumeMismatched = false;
   if (callArgs.resumeSessionId && result.ok && result.sessionId &&
       result.sessionId !== callArgs.resumeSessionId) {
     process.stderr.write(
       `Warning: requested --resume ${callArgs.resumeSessionId} did not match returned session ${result.sessionId}; kimi likely started a fresh session and prior context was not carried over.\n`
     );
+    resumeMismatched = true;
   }
   // Propagate kimi's original exit status (codex C4) so callers can distinguish
   // config vs usage vs signal causes. result.status is null on success paths.
-  process.exit(result.ok ? KIMI_EXIT.OK : (result.status ?? 1));
+  // Resume-mismatch on an otherwise-ok run → exit 1 (qwen 5-way-review M3):
+  // stdout/response stays intact so user sees kimi's answer; exit code signals
+  // the session-continuity contract failed so Claude renders a visible note.
+  process.exit(
+    result.ok
+      ? (resumeMismatched ? 1 : KIMI_EXIT.OK)
+      : (result.status ?? 1)
+  );
 }
 
 // One-line footer appended to /kimi:ask text output. Keep short — it's

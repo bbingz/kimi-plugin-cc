@@ -28,7 +28,19 @@ function computeWorkspaceSlug(workspaceRoot) {
 export function stateRootDir() {
   const pluginData = process.env[PLUGIN_DATA_ENV];
   if (pluginData) {
-    return path.join(pluginData, "state");
+    // Plugin-scoped subdir so CLAUDE_PLUGIN_DATA sharing across plugins
+    // in a multi-plugin Claude Code session (empirically observed during
+    // the 5-way review probe — codex/gemini/kimi/qwen companions all wrote
+    // to the same state.json at `<data>/state/<slug>/`) doesn't cause
+    // cross-plugin data loss: kimi's `pruneJobs` (50-cap) would otherwise
+    // evict gemini's jobs, and `cleanupOrphanedFiles` would delete their
+    // log files. A dedicated `/kimi/` subdir isolates this plugin's state
+    // regardless of how the harness sets CLAUDE_PLUGIN_DATA.
+    //
+    // Sibling plugin template note: this is the single line that must be
+    // renamed when forking (see docs/superpowers/templates/phase-1-template.md
+    // T.4). Do NOT collapse back to a shared `state/` path.
+    return path.join(pluginData, "kimi", "state");
   }
   return FALLBACK_STATE_ROOT_DIR;
 }
@@ -72,20 +84,34 @@ function defaultState() {
 export function loadState(workspaceRoot) {
   const file = resolveStateFile(workspaceRoot);
   const maxRetries = 3;
+  let lastError = null;
+  let fileExists = false;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       const raw = fs.readFileSync(file, "utf8");
+      fileExists = true;
       if (!raw.trim()) continue; // empty file from concurrent write
       const state = JSON.parse(raw);
       if (state && typeof state === "object") return state;
-    } catch {
+    } catch (e) {
+      lastError = e;
+      // `ENOENT` is the normal "first run" case — not a corruption warning.
+      if (e.code === "ENOENT") break;
+      fileExists = true;
       if (attempt < maxRetries - 1) {
-        // Brief pause before retry — concurrent writer may still be flushing
         const waitUntil = Date.now() + 20;
         while (Date.now() < waitUntil) { /* spin */ }
         continue;
       }
     }
+  }
+  // Silent fallback to defaultState() hid the user's job history when the
+  // file was actually corrupt (qwen 5-way-review M4). Surface a stderr
+  // warning on parse failures so the user has a chance to spot + recover.
+  if (fileExists && lastError) {
+    process.stderr.write(
+      `Warning: kimi state file ${file} is unreadable (${lastError.message}); job history reset to defaults.\n`
+    );
   }
   return defaultState();
 }
@@ -208,13 +234,38 @@ function cleanupOrphanedFiles(workspaceRoot, jobs) {
   const jobsDir = resolveJobsDir(workspaceRoot);
   try {
     for (const file of fs.readdirSync(jobsDir)) {
-      const id = file.replace(/\.(json|log)$/, "");
+      // Job artifacts: <jobId>.json (result), <jobId>.log (streaming log),
+      // <jobId>.config.json (stream-worker config). Strip whichever known
+      // suffix matches so we correctly correlate to the job id.
+      const id = file
+        .replace(/\.config\.json$/, "")
+        .replace(/\.(json|log)$/, "");
       if (!jobIds.has(id)) {
         removeFileIfExists(path.join(jobsDir, file));
       }
     }
   } catch {
     // jobsDir may not exist yet
+  }
+  // Also sweep leaked `state.json.tmp-*` temps left by atomicWriteFileSync
+  // on crash (codex 5-way-review L1). A tmp file that's older than ~60s
+  // definitely doesn't belong to an in-flight write and is safe to remove.
+  const stateDir = resolveStateDir(workspaceRoot);
+  try {
+    const stateFile = resolveStateFile(workspaceRoot);
+    const stateFileBase = path.basename(stateFile);
+    const cutoff = Date.now() - 60_000;
+    for (const file of fs.readdirSync(stateDir)) {
+      if (!file.startsWith(`${stateFileBase}.tmp-`)) continue;
+      try {
+        const stat = fs.statSync(path.join(stateDir, file));
+        if (stat.mtimeMs < cutoff) {
+          removeFileIfExists(path.join(stateDir, file));
+        }
+      } catch { /* stale already removed by another process */ }
+    }
+  } catch {
+    // stateDir may not exist yet
   }
 }
 

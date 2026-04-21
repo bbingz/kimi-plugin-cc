@@ -128,7 +128,7 @@ function renderFollowUpHints(job) {
   if (job.kind === "task" && job.write) {
     hints.push(`  - Review changes: \`/kimi:review --wait\``);
   }
-  if (job.geminiSessionId) {
+  if (job.kimiSessionId) {
     hints.push(`  - Resume: \`/kimi:rescue --resume-last\``);
   }
   return hints.join("\n");

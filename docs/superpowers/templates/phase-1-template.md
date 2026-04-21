@@ -206,17 +206,35 @@ Per-workspace JSON state (state.json + jobs/ + timing-history.jsonl stub). Only 
 cp {{KIMI_REPO_ROOT}}/plugins/kimi/scripts/lib/state.mjs plugins/{{LLM}}/scripts/lib/state.mjs
 ```
 
-- [ ] **Step 2: Rename path constants**
+- [ ] **Step 2: Rename path constants (whitelist — do NOT global-sed)**
 
-Edit `plugins/{{LLM}}/scripts/lib/state.mjs`. Replace every occurrence of:
-- `".claude/plugins/kimi"` → `".claude/plugins/{{LLM}}"`
-- `"kimi"` (in state-file / jobs-dir / timing-history-file paths only — do NOT touch comments or doc-strings that reference kimi as a historical note)
+Open `plugins/{{LLM}}/scripts/lib/state.mjs` in an editor. A naive
+`sed 's/kimi/{{LLM}}/g'` clobbers legitimate strings like
+`FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "kimi-companion")` and
+historical comments ("Gemini's state.mjs… Kimi has no equivalent…"),
+leaving the sibling plugin broken in subtle ways.
+
+Make these 4 targeted edits ONLY:
+
+1. `path.join(pluginData, "kimi", "state")` → `path.join(pluginData, "{{LLM}}", "state")`
+   (the plugin-scoped subdir added in kimi-plugin-cc's 5-way review — critical
+   for multi-plugin isolation)
+2. `FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "kimi-companion")` →
+   `FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "{{LLM}}-companion")`
+3. `STATE_FILE_NAME = "state.json"` → keep as-is (no rename needed; name is
+   already generic)
+4. `JOBS_DIR_NAME = "jobs"` → keep as-is
+
+**Leave all comments and doc-strings intact.** They reference the historical
+porting context and help future readers trace decisions back to
+`kimi-plugin-cc`.
 
 Verify:
 
 ```bash
-grep -n "kimi" plugins/{{LLM}}/scripts/lib/state.mjs
-# Expected: zero hits (or only hits inside intentional historical comments).
+grep -n "\"kimi" plugins/{{LLM}}/scripts/lib/state.mjs
+# Expected: zero hits. If any remain, those are legitimate references
+# inside comments (acceptable) or a missed path constant (fix).
 ```
 
 - [ ] **Step 3: Syntax check + commit**
@@ -314,8 +332,17 @@ export function describe{{LLM_CAP}}Exit(status, { stderr = "", stdout = "" } = {
   /* exit code → user-facing message, per your CLI's taxonomy */
 }
 
-// Error helper for transport failures
-export function errorResult({ error, events = [], textParts = [] }) { /* uniform shape */ }
+// Error helper for transport failures — must include `status` field per
+// the review.mjs `reviewError` contract (sibling plugins importing review.mjs
+// rely on `result.status` being populated so `transportError.status` can
+// propagate exit codes). Pass `status: null` when the failure isn't
+// transport-layer (e.g. schema-load error). Empty `status` means Claude's
+// render layer falls back to generic exit 1.
+export function errorResult({ status = null, error, stdout = "", events = [], textParts = [] }) {
+  /* uniform shape — include `status` field so review.mjs exit-code
+     propagation works; include `partialResponse` derived from stdout/events
+     so debug-mode consumers can see what kimi actually produced */
+}
 
 // Core CLI functions
 export function call{{LLM_CAP}}({ prompt, model, cwd, timeout, extraArgs, resumeSessionId }) { /* ... */ }

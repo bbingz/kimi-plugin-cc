@@ -53,7 +53,7 @@ once, still apply naming substitutions, but no substantive rewrite needed.
 5. `scripts/lib/state.mjs` — per-workspace JSON state (path constant changes)
 6. `scripts/lib/prompts.mjs` — template loader (14 lines, byte-identical)
 7. `scripts/lib/job-control.mjs` — background-job machinery (replace `callGeminiStreaming` binding + rewrite the `onEvent` callback for the new event taxonomy; otherwise identical)
-8. `scripts/lib/review.mjs` *(new in Phase 5)* — review parse/validate/retry orchestrator. Fully provider-agnostic; minimax-plugin-cc can import verbatim.
+8. `scripts/lib/review.mjs` *(new in Phase 5)* — review parse/validate/retry orchestrator. Fully provider-agnostic; minimax-plugin-cc should **copy this file verbatim** into its own `plugins/<llm>/scripts/lib/review.mjs`. Do NOT cross-import from kimi-plugin-cc at runtime — each plugin bundle must be self-contained so end users don't have a mystery dependency on a sibling repo.
 9. `schemas/review-output.schema.json` — output contract; update the
    `verdict` enum and severity enum only if the new LLM emits different categories.
 

@@ -5,15 +5,33 @@
 //
 // Diff budget for any review pipeline. Current prompts leave margin for the
 // schema block, summary, and focus line so the full request stays under a
-// conservative ceiling. Callers can override this later if needed.
+// conservative ceiling. Callers can override via `runReviewPipeline`'s
+// `maxDiffBytes` / `truncationNotice` / `retryNotice` options when the
+// provider has a smaller context window (gemini 5-way-review H3 +
+// qwen 5-way-review M1): sibling plugins with a 32k-context model would
+// otherwise hard-fail on 150 KB diffs.
 export const MAX_REVIEW_DIFF_BYTES = 150_000;
 
 // Render-layer notices. These strings flow through JSON fields that command
 // files render verbatim, so the warning is not lost on long outputs.
-export const TRUNCATION_NOTICE =
-  "⚠️ Diff exceeded the review budget; only the first 150 KB was reviewed. Findings below are INCOMPLETE. Consider narrowing scope (--scope staged) or running per-path.";
+// The truncation notice includes a template-variable `{BUDGET_KB}` that
+// `formatTruncationNotice` substitutes with the actual effective budget.
+export const TRUNCATION_NOTICE_TEMPLATE =
+  "⚠️ Diff exceeded the review budget; only the first {BUDGET_KB} KB was reviewed. Findings below are INCOMPLETE. Consider narrowing scope (--scope staged) or running per-path.";
+export const TRUNCATION_NOTICE = formatTruncationNotice(MAX_REVIEW_DIFF_BYTES);
 export const RETRY_NOTICE =
   "(The first response was malformed; the retry succeeded.)";
+
+// Build a truncation notice string matching the caller's effective budget.
+// Exported so sibling plugins can construct a notice that matches their own
+// `MAX_REVIEW_DIFF_BYTES` override without copy-pasting the template text.
+export function formatTruncationNotice(maxDiffBytes) {
+  // Decimal KB (1000 bytes) matches the intent of `MAX_REVIEW_DIFF_BYTES =
+  // 150_000` → "150 KB" rather than the 146 KB you'd get from 1024-based
+  // division. Consistent with how the constant is spelled.
+  const budgetKb = Math.round(maxDiffBytes / 1000);
+  return TRUNCATION_NOTICE_TEMPLATE.replace("{BUDGET_KB}", String(budgetKb));
+}
 
 // ── JSON extraction ──────────────────────────────────────
 //
@@ -185,12 +203,18 @@ export function reviewError({
 // `retryWarning` defaults to a neutral string so sibling plugins that inherit
 // this module get the same observability breadcrumb; callers can override
 // (or pass null to suppress) if they need a provider-specific label.
+// `truncationNotice` / `retryNotice` overrides let sibling plugins with a
+// different `maxDiffBytes` budget emit a matching user-facing note
+// (gemini 5-way-review H3 + qwen 5-way-review M1). Defaults mirror the
+// exported `TRUNCATION_NOTICE` / `RETRY_NOTICE` constants.
 export function runReviewPipeline({
   buildPrompt, callLLM,
   context, focus = null, schemaPath,
   model = null, cwd = process.cwd(), timeout,
   truncated = false,
   retryWarning = "Warning: review response failed parse/validation; retrying once with error hint...\n",
+  truncationNotice = TRUNCATION_NOTICE,
+  retryNotice = RETRY_NOTICE,
 } = {}) {
   let firstPrompt;
   try {
@@ -226,7 +250,7 @@ export function runReviewPipeline({
         ok: true,
         ...firstExtracted.data,
         truncated,
-        truncation_notice: truncated ? TRUNCATION_NOTICE : null,
+        truncation_notice: truncated ? truncationNotice : null,
         retry_used: false,
         retry_notice: null,
         sessionId: firstResult.sessionId,
@@ -299,9 +323,9 @@ export function runReviewPipeline({
     ok: true,
     ...retryExtracted.data,
     truncated,
-    truncation_notice: truncated ? TRUNCATION_NOTICE : null,
+    truncation_notice: truncated ? truncationNotice : null,
     retry_used: true,
-    retry_notice: RETRY_NOTICE,
+    retry_notice: retryNotice,
     sessionId: retryResult.sessionId,
   };
 }

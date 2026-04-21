@@ -2,6 +2,37 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-21 [Claude Opus 4.7 — 5-way review polish (phase-5-post-review-3)]
+
+- **status**: done
+- **scope**: plugins/kimi/scripts/{lib/{kimi.mjs, review.mjs, state.mjs, job-control.mjs, render.mjs}, kimi-companion.mjs, stop-review-gate-hook.mjs}, plugins/kimi/commands/rescue.md, plugins/kimi/prompts/(unchanged), plugins/kimi/skills/{kimi-cli-runtime/SKILL.md, kimi-prompting/references/kimi-prompt-recipes.md, kimi-result-handling/SKILL.md}, docs/superpowers/templates/phase-1-template.md, README.md (unchanged), CHANGELOG.md, lessons.md
+- **summary**: **5-way review** (codex + gemini + kimi + qwen + Claude-self as 5th reviewer with live empirical probes) at HEAD `ab8e8a1`. Vote: 2-yes / 3-no (codex + gemini + qwen flagged SHIP:no). **My own probe uncovered 2 findings the agents couldn't see** (since they only do static file reads): (a) `render.mjs:131 job.geminiSessionId` is dead code — field renamed to `kimiSessionId` in Phase 4 port but render wasn't updated, so `/kimi:status` never surfaces the Resume hint; (b) multi-plugin `CLAUDE_PLUGIN_DATA` sharing in a live Claude Code session causes kimi's `state.json` to co-mingle with gemini/codex/qwen jobs — verified by reading the actual state file (13 jobs, mixed `geminiSessionId`/`kimiSessionId`/`write:true` fields).
+- **Full 18-item integration:**
+  - **P0 (7)**:
+    - **#1 render.mjs:131 dead-code**: `job.geminiSessionId` → `job.kimiSessionId` (1 line, Resume hint now surfaces)
+    - **#2 cancel race** (codex H1 + qwen M2 convergent): `runWorker` now wraps writeJobFile + state-mutation in a single `updateState` transaction so a cancel-during-finalization can't clobber a completed/failed write OR vice versa
+    - **#3 stop-review-gate-hook shape divergence** (qwen M1): internal `{ok, reason}` → `{ok, error}` to match `errorResult`/`reviewError`; `emitDecision` boundary still emits Claude Code's `reason` field (external contract preserved)
+    - **#4 buildAdversarialPrompt retry hint weaker** (kimi M1): strengthened to mirror `buildReviewPrompt`'s retry block ("Nothing but the JSON" + anti-translation reminder)
+    - **#5 cancelJob liveness + escalation** (codex M1): up-front `kill(pid,0)` probe prevents signaling stale PIDs; three-step escalation SIGINT → SIGTERM → SIGKILL with alive-checks between
+    - **#6 "import review.mjs verbatim" doc ambiguity** (gemini Critical): CHANGELOG + lessons.md now explicitly say "**copy** verbatim into their own `plugins/<llm>/scripts/lib/review.mjs`" — clarifies it's a repo-local artifact, NOT cross-repo import
+    - **#7 multi-plugin state dir self-defense** (my probe): `stateRootDir()` now returns `<pluginData>/kimi/state/` instead of `<pluginData>/state/`; isolates kimi's state.json from sibling plugins even when `CLAUDE_PLUGIN_DATA` is shared (which it empirically is, based on 5-way-probe state file contents)
+  - **P1 (4)**:
+    - **#8 phase-1-template errorResult contract** (gemini H1): added `status` + `stdout` fields to the template's `errorResult` signature so sibling plugins don't accidentally produce a review.mjs with `transportError.status = null`
+    - **#9 phase-1-template T.4 sed whitelist** (gemini H2): replaced blind `s/kimi/{{LLM}}/g` with 4 targeted edits and explicit "leave comments intact" guidance; prevents clobbering `FALLBACK_STATE_ROOT_DIR = "kimi-companion"` and historical doc-strings
+    - **#10 kimi-cli-runtime exit-code table** (qwen M5): added exit 124 (local timeout, distinct from SIGTERM 143) per codex 4-way M1 fix
+    - **#11 rescue.md error block** (gemini M2): added full error-handling section with exit-code map + declarative suggestions (mirrors ask.md/review.md convention)
+  - **P2 (7)**:
+    - **#12 role=system silent-collapse** (codex L2): `parseKimiStdout` now tracks `unexpectedRoleCount`; error message distinguishes "think-only" from "only unexpected-role events" so diagnostic is accurate
+    - **#13 orphan tmp + config collector** (codex L1): `cleanupOrphanedFiles` now strips `.config.json` suffix (previously mis-correlated stream-worker config files as orphans) AND sweeps `state.json.tmp-*` leftovers older than 60s
+    - **#14 kimi-prompt-recipes schema fence** (gemini M3): `<schema>{{REVIEW_SCHEMA}}</schema>` → ```` ```json {{REVIEW_SCHEMA}} ``` ```` to match actual `buildReviewPrompt` output shape
+    - **#15 resume mismatch exit code** (qwen M3): `--resume <uuid>` returning a different session now exits 1 instead of 0; response stays on stdout so answer is visible, but exit code signals continuity contract broke
+    - **#16 corrupt state.json stderr warning** (qwen M4): `loadState` now emits a stderr warning when the file exists but is unparseable (previously silent `defaultState()` fallback hid the user's lost job history)
+    - **#17 TRUNCATION_NOTICE parameterization** (gemini H3 + qwen M1 convergent): `runReviewPipeline` now accepts `truncationNotice` + `retryNotice` overrides; `formatTruncationNotice(maxBytes)` helper exported for sibling plugins with a different `MAX_REVIEW_DIFF_BYTES`
+    - **#18 result-handling rule #3 scope** (kimi L4): "Never auto-execute" now explicitly lists all `/kimi:*` commands (not just ask/review) and notes the `/kimi:rescue` tool_call exception
+- **Verification**: T5 PASS (needs-attention, 4 findings), T9 PASS (needs-attention, 4 findings, red-team regex matched), H2 `--scope stagged` exits 2, `formatTruncationNotice(32000)` produces "32 KB" string, `stateRootDir()` returns path under `/kimi/state/`. All 7 .mjs files `node --check` clean.
+- **Deferred to v0.2 / case-by-case**: codex L2 PID identity check via birth-time (OS-specific, complex), gemini L1 MiniMax verification (sandbox blocked cross-repo read), kimi L1-3 (already verified LOW / minor), future cross-plugin state write protocol if the harness changes CLAUDE_PLUGIN_DATA semantics.
+- **next**: tag `phase-5-post-review-3`, push to GitHub, sync memory. Then minimax-plugin-cc author pulls the updated template.
+
 ## 2026-04-21 [Claude Opus 4.7 — 4-way review polish (phase-5-post-review-2)]
 
 - **status**: done
@@ -52,7 +83,7 @@ Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gem
 - **scope**: plugins/kimi/scripts/lib/{review.mjs (new), kimi.mjs}, plugins/kimi/scripts/kimi-companion.mjs, plugins/kimi/prompts/adversarial-review.md (new), plugins/kimi/commands/adversarial-review.md (new), plugins/kimi/skills/kimi-prompting/**, lessons.md (new), docs/superpowers/templates/phase-1-template.md (new), CHANGELOG.md
 - **summary**: Phase 5 closes v0.1. 10 tasks, 10 commits, post-execution 3-way review integrated.
   - **`/kimi:adversarial-review`** live: red-team variant of `/kimi:review` with same output schema; prompt template at `plugins/kimi/prompts/adversarial-review.md` has STRICT OUTPUT RULES + ADVERSARIAL STANCE RULES (anti-dialectical constraints). T9 PASS empirically: on SQL-injection + fake-auth sample diff, summary opens literally "Do not ship." with 4 findings (vs balanced review's 2); regex red-team gate passes.
-  - **Review pipeline extracted** to `plugins/kimi/scripts/lib/review.mjs` (provider-agnostic): `MAX_REVIEW_DIFF_BYTES`, `TRUNCATION_NOTICE`, `RETRY_NOTICE`, `extractReviewJson`, `validateReviewOutput`, `reviewError`, `runReviewPipeline`. `RETRY_NOTICE` debranded ("The first response..." vs "Kimi's first...") per codex C2. `kimi.mjs` re-exports for back-compat; `callKimiReview` thin-wrapped to `runReviewPipeline`. Sibling plugins (minimax / qwen / doubao) import review.mjs verbatim.
+  - **Review pipeline extracted** to `plugins/kimi/scripts/lib/review.mjs` (provider-agnostic): `MAX_REVIEW_DIFF_BYTES`, `TRUNCATION_NOTICE`, `RETRY_NOTICE`, `extractReviewJson`, `validateReviewOutput`, `reviewError`, `runReviewPipeline`. `RETRY_NOTICE` debranded ("The first response..." vs "Kimi's first...") per codex C2. `kimi.mjs` re-exports for back-compat; `callKimiReview` thin-wrapped to `runReviewPipeline`. Sibling plugins (minimax / qwen / doubao) **copy** review.mjs verbatim into their own `plugins/<llm>/scripts/lib/review.mjs` — it is a repo-local artifact, NOT a cross-repo import target (avoids end-user brittleness from a dependency outside the plugin bundle).
   - **`kimi-prompting` skill finalized**: SKILL.md (46L) + 3 references — `kimi-prompt-recipes.md` (140L: ask / review / adversarial / rescue / summarization), `kimi-prompt-antipatterns.md` (101L: 8 observed failures including `no_changes` hallucination per gemini G6), `prompt-blocks.md` (148L: reusable XML blocks).
   - **`lessons.md`** (314L) at repo root per spec §6.2: sections A-H populated with Phase 0–5 reality (11 real pits documented, 2 checklists, cross-AI decision log, Kimi's own checklist answers appendix).
   - **`phase-1-template.md`** (427L) at `docs/superpowers/templates/` per spec §6.2 "模板沉淀" (gemini G1): parameterized over 9 placeholders (`{{LLM}}`, `{{LLM_CAP}}`, `{{LLM_UPPER}}`, `{{LLM_CLI}}`, `{{LLM_CLI_INSTALL}}`, `{{LLM_SESSION_ENV}}`, `{{LLM_STATE_DIR}}`, `{{LLM_HOME_DIR}}`, `{{KIMI_REPO_ROOT}}`). Tasks T.1-T.6 compressed from kimi Phase-1 plan's 1500 lines of provider-specific content.

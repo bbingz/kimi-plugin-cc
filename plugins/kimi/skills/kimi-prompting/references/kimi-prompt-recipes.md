@@ -43,9 +43,9 @@ verdict MUST be approve or needs-attention (never "no_changes" — that is a com
 Fill ALL required fields per finding, or omit the finding entirely.
 </output_contract>
 
-<schema>
+```json
 {{REVIEW_SCHEMA}}
-</schema>
+```
 
 <repository_context>
 {{REVIEW_INPUT}}
