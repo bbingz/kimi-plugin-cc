@@ -335,24 +335,3 @@ export function setConfig(workspaceRoot, key, value) {
     state.config[key] = value;
   });
 }
-
-// ── Timing history stubs (Phase 4 import resolver) ─────────
-//
-// Gemini's state.mjs records timing per-job for operator dashboards. Kimi has
-// no equivalent stats surface (probe 04: JsonPrinter drops StatusUpdate), so
-// we export inert stubs to satisfy job-control.mjs's import set without
-// fabricating data. Phase 5+ may wire real timing if kimi exposes it.
-
-export function resolveTimingHistoryFile() {
-  return path.join(os.homedir(), ".claude", "plugins", "kimi", "timing-history.jsonl");
-}
-
-export function appendTimingHistory(_record) {
-  // Intentional no-op in v0.1 — we have no timing data to record.
-  return;
-}
-
-export function readTimingHistory() {
-  // Intentional empty result in v0.1. Callers must handle empty arrays.
-  return [];
-}

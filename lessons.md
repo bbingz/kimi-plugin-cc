@@ -362,6 +362,15 @@ looked at it already knew it was a stub.
    `runReviewPipeline` indirection is the specific shape worth looking
    at (thin CLI-specific adapters, thick pipeline in shared lib).
 
+**Phase 5 timing decision (v0.1 → v0.2 transition)**:
+
+- **v0.1 choice**: delete the dead stub. Honestly signal "timing not collected" by absence.
+- **v0.2 gate condition**: kimi-cli 1.37 re-probe must answer one question — does the `result` event surface per-model usage (analogous to gemini `stats.models`)? Kimi 1.36's `JsonPrinter` dropped `StatusUpdate` (probe 04); 1.37 may have changed.
+- **If 1.37 exposes per-model**: adopt gemini §6.1 scaffold end-to-end — six-stage TimingAccumulator (cold / ttft / gen / tool / retry / tail), ndjson global history with flock + trim, `/kimi:timing` in three modes (single-job / `--history` / `--stats`). Primary-model attestation (§6.3) becomes possible.
+- **If 1.37 still drops**: implement the CLI-agnostic three-stage subset — cold (spawn → first event), ttft (first event → first text-block), tail (last event → close). These need zero CLI cooperation. Primary-model attestation degrades to "log requested model; cannot verify served model" — honest partial signal, not dead stub.
+- **Either way**: `tests/` directory lands together with `timing.mjs`. `sum-invariant` is algebraic and deserves unit tests — gemini has 59, we need a smaller subset tailored to whatever event-schema kimi 1.37 actually emits.
+- **Cross-sibling coordination**: if minimax / qwen / doubao want comparable telemetry, they should match gemini's ndjson schema field-for-field so one aggregator works across providers.
+
 ---
 
 ## Appendix I: Kimi's actual checklist answers (gemini Phase-5-plan G5)

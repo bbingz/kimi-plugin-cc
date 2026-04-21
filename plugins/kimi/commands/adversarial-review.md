@@ -1,6 +1,6 @@
 ---
 description: Run an adversarial Kimi review that challenges the implementation
-argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|staged|unstaged|branch] [--model <model>] [focus ...]'
+argument-hint: '[--background|--wait] [--base <ref>] [--scope auto|working-tree|staged|unstaged|branch] [--model <model>] [focus ...]'
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 ---

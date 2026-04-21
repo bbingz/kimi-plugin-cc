@@ -1,6 +1,6 @@
 ---
 description: Delegate investigation, an explicit fix request, or follow-up work to the Kimi rescue subagent
-argument-hint: "[--background|--wait] [--resume-last|--fresh] [--model <model>] [what Kimi should investigate, solve, or continue]"
+argument-hint: '[--background|--wait] [--resume-last|--fresh] [--model <model>] [what to investigate, solve, or continue]'
 allowed-tools: Bash(node:*), AskUserQuestion, Agent
 ---
 

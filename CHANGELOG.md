@@ -2,6 +2,38 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-21 [Claude Opus 4.7 + codex executor — gemini-plugin-cc v0.6.0 alignment-review response]
+
+- **status**: done
+- **scope**: plugins/kimi/scripts/lib/{job-control.mjs, state.mjs, prompts.mjs}, plugins/kimi/commands/{rescue.md, adversarial-review.md}, plugins/kimi/skills/kimi-cli-runtime/SKILL.md, plugins/kimi/CHANGELOG.md, lessons.md, CHANGELOG.md, docs/superpowers/plans/2026-04-21-alignment-response-gemini-v0.6.0.md (10 files)
+- **source**: `/Users/bing/-Code-/gemini-plugin-cc/docs/alignment/kimi.md` (external; gemini maintainer, v0.6.0 baseline, 2026-04-21)
+- **plan-doc**: `docs/superpowers/plans/2026-04-21-alignment-response-gemini-v0.6.0.md` (authored by Claude, executed by codex)
+- **summary**: Gemini-plugin-cc maintainer read kimi v0.1.0 against gemini v0.6.0 baseline and filed a P0–P3 alignment report. Every claim was file:line-verified by Claude on 2026-04-21. This commit integrates 11 concrete changes: one P0 dead-code delete, three P3 contract-polish items, four §5 clarifications requested by the reviewer, one sub-CHANGELOG drift fix, and this response entry.
+- **Phase-N conventions referenced by reviewer**: for sibling-plugin authors and future AI iterators — `Phase-1 / Phase-4 / Phase-5` etc. in code comments refer to the plan documents at `docs/superpowers/specs/2026-04-20-kimi-plugin-cc-design.md` (v0.1 authoring spec) and `docs/superpowers/templates/phase-1-template.md` (sibling-plugin bootstrap map). New siblings should read these two first.
+- **P0 — delete dead timing read path**: `appendTimingHistory` was a v0.1 stub that satisfied `job-control.mjs`'s Phase-4 import-resolver without producing data; `job-control.mjs:254,264` read `result.timing` (never set by `callKimiStreaming` → always null) and called the no-op stub. Dead code with misleading "timing is collected" signal. Deleted three stub exports in `state.mjs` + the header comment, deleted the `timing` read/write/branch + import in `job-control.mjs`. v0.1 now honestly signals "timing not collected" by absence.
+- **P3a — rescue.md argument-hint provider-neutral**: `[what Kimi should investigate, solve, or continue]` → `[what to investigate, solve, or continue]` so sibling plugins can copy the argument contract with only `s/kimi/<llm>/` instead of also rewriting the descriptive phrase.
+- **P3b — frontmatter quote style normalized**: 7/8 commands already used single-quoted YAML scalars; `rescue.md` was double-quoted for no structural reason. Flipped `rescue.md` to single quotes. No semantic change.
+- **P3c — `--background` / `--wait` option ordering normalized**: `adversarial-review.md` had `[--wait|--background]`; `rescue.md` had `[--background|--wait]`. Unified on `[--background|--wait]` — background is the more common async path in both commands.
+- **§5.2 — Auth boundary documented**: added explicit bullet in `kimi-cli-runtime/SKILL.md` runtime-requirements section: companion never injects `KIMI_API_KEY`; auth is 100% CLI-managed via `kimi login` → `~/.kimi/credentials/`. Plugin is zero-coupled to Moonshot's auth model.
+- **§5.3 — Phase 5 timing plan**: recorded as a new sub-section in `lessons.md §I.1` with explicit v0.2 gate condition (kimi-cli 1.37 re-probe for per-model usage) and branching plan (full 6-stage gemini-scaffold if CLI exposes per-model, CLI-agnostic 3-stage subset if not). `tests/` directory is gated on whichever timing path we take.
+- **§5.4 — lessons.md contents**: no action; reviewer is free to read. §I.1 is the most relevant cross-plugin entry.
+- **§5.5 — prompts.mjs small-size rationale**: added module-level block comment explaining that review-flow prompts live in `review.mjs` (`buildReviewPrompt` / `buildAdversarialPrompt`); ask/rescue prompts pass through verbatim; no v0.1 abstraction planned. Siblings that need centralization should do it in their own `<llm>.mjs`.
+- **Sub-CHANGELOG forward-ref**: `plugins/kimi/CHANGELOG.md` was stale ("0.1.0 in progress — Phase 1") and misled the reviewer into thinking progress was still at Phase 1 (actual: v0.1 complete + PR #1 merged at `0bb38bf`). Replaced contents with a forward-reference to the root CHANGELOG + a one-line reason the file is retained. Root cause of this drift: two CHANGELOGs for one plugin → one always goes stale; lesson generalizable to siblings.
+- **Deferred (documented in `lessons.md §I.1`)**:
+  - **P1 A-roll / primary-model attestation**: needs kimi 1.37 re-probe first to confirm whether `JsonPrinter` still drops per-model usage.
+  - **P2 `tests/` directory**: pairs naturally with v0.2 timing work.
+  - **Gemini `gfg-` foreground-job pattern**: intentionally absent — its unified-timing-path justification doesn't apply when we don't collect timing.
+- **Disagreements (recorded in `lessons.md §I.1`)**:
+  1. Reviewer inferred "still in Phase 1" from stale sub-CHANGELOG — not true, v0.1 complete + PR #1 merged at `0bb38bf`.
+  2. "§2 首行噪声截取 ❓ 未确认" — confirmed **not applicable**: kimi CLI emits clean JSONL from byte 0 (probe-results.json v3 `top_level_keys_observed: [role, content]`); gemini CLI v0.37.1's noise-prefix is a gemini-only quirk.
+  3. Gemini foreground `gfg-` prefix intentionally not copied — see "Deferred" above.
+- **Verification**: `node --check` clean on all 11 `plugins/kimi/scripts/**/*.mjs`; `grep -rn 'appendTimingHistory\|readTimingHistory\|resolveTimingHistoryFile\|result\.timing' plugins/kimi/scripts/` returns zero matches; all 8 commands' `argument-hint:` lines start with single quotes; zero `[--wait|--background]` residue in commands/.
+- **Handback to gemini maintainer** (for next `baseline.md` iteration):
+  1. §6.3 primary-model attestation needs a "CLI must emit per-model usage in `result` event" prerequisite caveat — not every sibling CLI does this.
+  2. The "stale sub-CHANGELOG drift" trap is sibling-generic; consider a line in baseline about plugin-scoped vs. repo-root logging conventions (we picked the wrong default by having both).
+  3. Our `review.mjs` extraction (thin CLI-specific adapters → thick shared pipeline) is the specific shape worth looking at if gemini refactors review out of `gemini.mjs`.
+- **next**: Claude verifies on 2026-04-22; gemini maintainer reads `baseline.md` merge diff in their next iteration.
+
 ## 2026-04-21 [Claude Opus 4.7 — P0 K2.5 naming correction + P1 1.37 flag inventory]
 
 - **status**: done

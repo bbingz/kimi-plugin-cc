@@ -11,6 +11,7 @@ Internal contract for code invoking `scripts/kimi-companion.mjs`. Not user-facin
 
 - `kimi` CLI ≥ 1.34 on PATH (dev box verified against 1.36.0 and 1.37.0)
 - `~/.kimi/credentials/` non-empty (user ran `kimi login` interactively)
+- Auth is **100% CLI-managed** — the companion never injects `KIMI_API_KEY` or similar env vars; `kimi login` writes `~/.kimi/credentials/` (OAuth refresh-token handled by kimi-cli itself). The plugin is zero-coupled to Moonshot's auth model — rotating tokens is `kimi logout && kimi login`, no plugin work required.
 - Node.js ≥ 18
 - Zero npm dependencies — plugin uses only Node built-ins
 
