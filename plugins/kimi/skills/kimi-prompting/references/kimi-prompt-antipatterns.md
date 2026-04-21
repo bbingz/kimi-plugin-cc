@@ -111,58 +111,68 @@ path for empty diffs).` Both `buildReviewPrompt` and
 enforces the enum. Do not relax the schema to accept `"no_changes"`
 from the LLM — the split contract is intentional.
 
-## 9. Using `K2.6 Agent` / `K2.6 Agent Swarm` models for review or ask
+## 9. Using agent-family Kimi models for review or ask
 
-**Observed (2026-04-20, K2.6 release):** Moonshot's K2.6 ships as a
-family — K2.6 (chat/code), **K2.6 Agent** (website + full-stack builder
-specialized in video hero sections, WebGL shaders, GSAP/Framer, React
-19 + shadcn, auth + DB wiring), and **K2.6 Agent Swarm** (multi-agent
-long-horizon orchestration). Users whose `~/.kimi/config.toml` has
-any of these as `[models.*]` entries can pass `-m k2.6-agent` (or
-similar) to `/kimi:ask`, `/kimi:review`, `/kimi:adversarial-review`.
-The agent-family system prior strongly biases toward scaffolding
-files and calling tools — it will read the repo, write generated
-code, and produce React/TS output even when the prompt asks for a
+**Observed (verified 2026-04-21 against `MoonshotAI/Kimi-K2.5`
+README + kimi-cli 1.37 `--agent` flag):** Moonshot's current flagship
+is **Kimi-K2.5** (not "K2.6" — that was a mis-naming in the
+2026-04-20 session; no K2.5 → K2.6 release exists). K2.5's published
+features include "Agent Swarm": *"K2.5 transitions from single-agent
+scaling to a self-directed, coordinated swarm-like execution scheme.
+It decomposes complex tasks into parallel sub-tasks executed by
+dynamically instantiated, domain-specific agents."* Users whose
+`~/.kimi/config.toml` exposes agent-mode variants via `[models.*]`
+sections (conventional names: `kimi-k2.5-agent`, `kimi-agent`, etc.
+— Moonshot does not publish a canonical token list; section titles
+are whatever the user typed) can pass `-m <agent-name>` to
+`/kimi:ask`, `/kimi:review`, `/kimi:adversarial-review`. The
+agent-mode system prior strongly biases toward scaffolding files and
+calling tools — it will read the repo, write generated code, and
+produce multi-file output even when the prompt asks for a
 one-paragraph answer or a strict JSON review. Our `STRICT OUTPUT
-RULES` in `buildReviewPrompt` are prompt-layer constraints; the agent
-system prior overrides them empirically often enough that JSON
+RULES` in `buildReviewPrompt` are prompt-layer constraints; the
+agent system prior overrides them empirically often enough that JSON
 compliance drops sharply.
 
-**Fix:** Do not pass K2.6 Agent / K2.6 Agent Swarm to these commands:
+Separately, kimi-cli 1.37 exposes `--agent [default|okabe]` — this
+is an **agent specification** (tool + skill bundle), orthogonal to
+the `-m <model>` choice. Neither flag is passed by the companion;
+both are user-operator concerns surfaced here for hygiene only.
 
-- `/kimi:ask` — use a chat/code model (`K2.6`, `K2.6 Code`, or
-  `kimi-k2.5`)
+**Fix:** Do not pass agent-mode model names to these commands:
+
+- `/kimi:ask` — use a chat/code model (`kimi-k2.5`, `kimi-latest`,
+  or whatever chat-family alias your config exposes)
 - `/kimi:review` — same
 - `/kimi:adversarial-review` — same
 
-Agent-family models are appropriate for `/kimi:rescue` /
+Agent-mode models are appropriate for `/kimi:rescue` /
 `/kimi:task --background` where the goal IS "go do work, write files,
 invoke tools" — that's the sweet spot. A future `/kimi:scaffold`
-command (v0.2 backlog) will expose the agent's website-building
+command (v0.2 backlog) would expose the agent's multi-file builder
 capability explicitly, so users don't have to route through
 `/kimi:rescue` with an awkward prompt.
 
 **How to spot an agent variant in your config:** the plugin's
 `readKimiConfiguredModels()` lists every `[models.*]` section title
-verbatim — it doesn't classify agent vs. chat. As of the K2.6 family
-release, **if the section title (or model display name) contains the
-word `agent` or `swarm`, treat it as the agent variant** and steer
-away from `/kimi:ask` / `/kimi:review`. Common patterns observed in
-published examples:
+verbatim — it doesn't classify agent vs. chat. **If the section
+title (or model display name) contains the word `agent` or `swarm`,
+treat it as the agent variant** and steer away from `/kimi:ask` /
+`/kimi:review`. Patterns you'll typically see in user configs:
 
-- `[models."kimi-k2.6-agent"]` — agent
-- `[models."kimi-k2.6-agent-swarm"]` — agent swarm
-- `[models."kimi-k2.6"]` — chat/code (safe for review/ask)
-- `[models."kimi-k2.6-code"]` — chat/code (safe for review/ask)
-- `[models."kimi-for-coding"]` — kimi's "Kimi for Code" rebrand,
+- `[models."kimi-k2.5-agent"]` / `[models."kimi-agent"]` — agent
+- `[models."kimi-k2.5-agent-swarm"]` / `[models."kimi-swarm"]`  — agent swarm
+- `[models."kimi-k2.5"]` — chat/code (safe for review/ask)
+- `[models."kimi-latest"]` — chat/code alias (safe)
+- `[models."kimi-for-coding"]` — Moonshot's "Kimi for Code" rebrand,
   chat-family (safe)
 
 If the section title is ambiguous (custom provider label, no
 `agent`/`swarm` keyword), check the provider's docs before passing
 `-m` to `/kimi:review`.
 
-**Verify:** if `/kimi:review` output arrives with React/TS code
-blocks, unprompted file scaffolding, or the schema validator
-rejecting a response with a verdict like `"built"` or `"scaffolded"`,
-confirm the model wasn't an agent variant before blaming the prompt.
+**Verify:** if `/kimi:review` output arrives with multi-file code
+blocks, unprompted scaffolding, or the schema validator rejecting a
+response with a verdict like `"built"` or `"scaffolded"`, confirm
+the model wasn't an agent variant before blaming the prompt.
 Operator hygiene, not validator hygiene.

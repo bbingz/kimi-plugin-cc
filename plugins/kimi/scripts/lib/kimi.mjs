@@ -26,15 +26,15 @@ export {
 // ── Constants ──────────────────────────────────────────────
 // All values below are sourced from doc/probe/probe-results.json v3.
 
-// Default per-call timeout. K2.6 agent models (released 2026-04-20) can
-// reasonably take >5 min on long-horizon agentic turns, and kimi-cli 1.37
-// explicitly keeps the --print loop alive while background tasks are
-// running (`fix(soul): keep agent loop alive while background tasks are
-// running`). The old 300s ceiling would SIGTERM these into exit 143 and
-// users would see "Request was interrupted" for what was actually our own
-// premature kill. Default pushed to 15 min; env `KIMI_TIMEOUT_MS` lets
-// operators widen (e.g. for dedicated agent-swarm scenarios) or tighten
-// (tests).
+// Default per-call timeout. K2.5 agent-swarm mode (see Kimi-K2.5 README
+// "Agent Swarm" capability) can reasonably take >5 min on long-horizon
+// agentic turns, and kimi-cli 1.37 explicitly keeps the --print loop
+// alive while background tasks are running (`fix(soul): keep agent
+// loop alive while background tasks are running`, PR #1802). The old
+// 300s ceiling would SIGTERM these into exit 143 and users would see
+// "Request was interrupted" for what was actually our own premature
+// kill. Default pushed to 15 min; env `KIMI_TIMEOUT_MS` lets operators
+// widen (e.g. for dedicated agent-swarm scenarios) or tighten (tests).
 //
 // Parsing is STRICT — the env value must be purely digits. `60s` or
 // `60abc` or `60.5` are rejected rather than silently parsed to 60ms
