@@ -2,6 +2,15 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-21 [Claude Opus 4.7 — self-review follow-up: resolveWorkspaceRoot slug consistency]
+
+- **status**: done
+- **scope**: plugins/kimi/scripts/kimi-companion.mjs, CHANGELOG.md
+- **summary**: Self-review of the prior commit (aa0bde6) caught a latent regression: my H3 realpath fix normalized cwd at 4 kimi-spawn entry points (runAsk / runReview / runAdversarialReview / runTask) but NOT at the 4 other sites (runSetup / runJobStatus / runJobResult / runJobCancel / runTaskResumeCandidate), which continued to pass raw `process.cwd()` to `resolveWorkspaceRoot`. In git repos this was a non-issue — `git rev-parse --show-toplevel` already returns a canonical absolute path so all callers got the same slug. **But in non-git scratch dirs on macOS** (`/tmp/foo` symlinked to `/private/tmp/foo`), the two caller styles hashed to different workspace slugs — splitting state.json between the "setup/status/cancel" side and the "review/task" side, losing job continuity within a single session. Smoke-tested with symlinked tmpdir on Linux to confirm the race before shipping.
+- **Fix**: move realpath normalization INTO `resolveWorkspaceRoot`'s non-git fallback (`return resolveRealCwd(cwd)` instead of `return cwd`). One line; git repo path untouched (since git already returns canonical); all callers now agree in non-git contexts regardless of whether they realpath'd upstream.
+- **Verification**: node --check clean; smoke test with symlinked tmpdir shows `resolveWorkspaceRoot(link)` === `resolveWorkspaceRoot(realpath(link))` after the fix (would be !== before).
+- **next**: self-review report → open PR.
+
 ## 2026-04-21 [Claude Opus 4.7 — post-v0.1 read-only review fixes + K2.6 agent follow-up]
 
 - **status**: done

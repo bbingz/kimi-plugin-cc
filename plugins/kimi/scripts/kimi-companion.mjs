@@ -80,6 +80,17 @@ function resolveRealCwd(cwd) {
 
 // Resolve the git workspace root for the given cwd (background job tracking
 // scopes state to the workspace). Falls back to cwd when not in a git repo.
+//
+// The fallback realpaths its return so the workspace slug stays stable no
+// matter whether the caller realpath'd cwd upstream. Without this, in a
+// non-git scratch dir on macOS (`/tmp/foo` → `/private/tmp/foo`), the
+// "setup / status / result / cancel / resume" sites (which pass raw
+// process.cwd()) and the "ask / review / adversarial-review / task"
+// sites (which realpath via resolveRealCwd before calling) would hash to
+// two different slugs — splitting state.json and losing job continuity.
+// Git repos are unaffected: `git rev-parse --show-toplevel` already
+// returns a canonical absolute path, so the realpath branch is never
+// taken. (Review H3 follow-up.)
 function resolveWorkspaceRoot(cwd) {
   try {
     const r = spawnSync("git", ["rev-parse", "--show-toplevel"], {
@@ -87,7 +98,7 @@ function resolveWorkspaceRoot(cwd) {
     });
     if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
   } catch { /* not a git repo */ }
-  return cwd;
+  return resolveRealCwd(cwd);
 }
 
 const USAGE = `Usage: kimi-companion <subcommand> [options]
