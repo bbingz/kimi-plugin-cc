@@ -2,6 +2,15 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-22 [Claude Opus 4.7 — v0.2 P3 Task 2 (C5): split enrichJob into pure fn + enrichJobFromDisk IO wrapper]
+
+- **status**: done (Task 2 of 11 in v0.2 P3 polish batch, executed in worktree `feat/v0.2-p3-polish`)
+- **scope**: `plugins/kimi/scripts/lib/job-control.mjs`, `CHANGELOG.md`
+- **summary**: pure `enrichJob(job, {logPreview, isAlive}) -> {enriched, shouldPersistZombie}` — no file IO, no state mutation, unit-testable. Thin IO wrapper `enrichJobFromDisk(job, workspaceRoot)` reads log preview, probes liveness, invokes pure fn, and preserves existing zombie-persist side effect via `upsertJob`. Redirected 2 in-file call sites (`buildStatusSnapshot` + `buildSingleJobSnapshot`) to the wrapper. No external callers of `enrichJob` existed.
+- **pure-read deferred**: `/kimi:status` read path still persists zombie-detected jobs via the wrapper's `upsertJob` call. Fully decoupling read-from-write is out of P3 scope; tracked for v0.2+ in lessons.md §I.2.
+- **verifications**: `node --check` clean · pure `enrichJob` smoke test with `{isAlive:false, status:'running', pid:99999}` returns `{enriched:{status:'failed', phase:'failed', detail:'Process exited unexpectedly', progressPreview:'x', elapsed:'0s', kindLabel:'job', …}, shouldPersistZombie:true}` · `kimi-companion.mjs` imports without error and renders usage · `grep -E 'enrichJob\b' plugins/kimi/scripts/` finds only the definition + wrapper internal call (zero stragglers of old `enrichJob(job, workspaceRoot)` signature).
+- **next**: Task 3 (C4 rename targets in job-control.mjs — kimiSessionId + SESSION_ID_ENV + KIMI_STATUS_TIMED_OUT) or other unassigned P3 tasks per plan.
+
 ## 2026-04-22 [Claude Opus 4.7 — v0.2 P3 Task 1 (C2): canonical errorResult + cross-module migration]
 
 - **status**: done (Task 1 of 11 in v0.2 P3 polish batch, executed in worktree `feat/v0.2-p3-polish`)
