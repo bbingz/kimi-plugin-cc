@@ -2,6 +2,26 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-23 [Claude Opus 4.7 — v0.2 P2 spec v2 (6-way review integrated, plan-ready)]
+
+- **status**: spec v2 committed on main. 6-way review round 1 completed via parallel agent dispatch (codex + gemini + kimi + qwen + minimax + Claude-self). All accepted findings integrated; round 2 deemed unnecessary per feedback_review_diminishing_returns (no unresolved convergent findings after round-1 integration). Ready for plan phase.
+- **6-way review outcomes** (see spec §15.3 for full per-reviewer table):
+  - **11 blockers/must-fix accepted**: (a) `cwd` parameter missing from callKimi call sites (Codex + Gemini convergent); (b) "refusing to resume ghost session" wording contradicts probe v4 Q4.4 (Codex + Gemini + Kimi convergent); (c) PR #1716 claim is false per Kimi source-read of `cli/__init__.py:546-553` — ghost affects ALL modes, not just --print; (d) `kimi -C` is actually SAFE per Kimi source-read (`BadParameter` on no-prior-session) — §12.2 Q6 completely rewritten; (e) `kaos` field matters for work_dirs lookup per Kimi source-read of `metadata.py:51-55` — `resolveContinueTarget` signature gained `kaos = 'local'` param; (f) fs-error coverage via `existsSync` unreachable (Codex) — switched to `statSync` with try/catch; (g) unsafe `data.work_dirs` property access on null kimi.json (Gemini); (h) `session-empty` terminology factual correction (probe v4 proved ghost = post-hoc-identical); (i) UUID regex prose/code inconsistency (MiniMax) — unified on semi-strict 8-4-4-4-12 hex with position-specific dashes; (j) concurrent-write race upgrade to data-divergence scenario (MiniMax) — §7.6 rewritten as two-scenario framing; (k) file-at-dir-position + FIFO + ELOOP + ANSI-escape hostile states covered (Qwen + MiniMax).
+  - **5 should-fix accepted**: realpath narrative corrected as platform-not-version behavior (Kimi); populated predicate divergence from kimi-cli's own logic documented; §7.8 homedir() /var/root claim corrected; T-checklist per-reason sub-items (Qwen); legacy session migration edge documented.
+  - **3 nice-to-have accepted**: unused readdirSync import removed; UUID regex commentary corrected; `mapSessionReason` null-handling and origin-aware exit status added.
+  - **2 nitpicks accepted**.
+  - **1 deferred**: probe CI-safety (MiniMax) — YAGNI for single-developer workflow; future CI adoption would add a probe v4.1 pass.
+  - **0 rejected**.
+- **Key v2 code-shape corrections**:
+  - `resolveContinueTarget(normalizedCwd, kaos = 'local')` — iterates work_dirs array with dual match on path + kaos.
+  - `validateResumeTarget` uses `statSync` (not `existsSync`) with precise `isDirectory()` + `isFile()` checks; FIFO + file-at-dir-pos + dangling-symlink all correctly classified.
+  - `mapSessionReason(reason, ctx, options = {commandOrigin})` — origin-aware exit status (continue vs resume differ for invalid-uuid); ANSI/control-char sanitization via `sanitizeForStderr` helper; null-handling via `!= null` checks with `'?'` fallback.
+  - `case 'continue'` / `case 'resume'` now pass `cwd: realCwd` to `callKimi` — closes the §7.7 symmetry hole that v1.2 introduced.
+  - Semi-strict UUID regex `/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i` rejects 36-dash and similar degenerate inputs.
+- **Test plan expansion**: ~40 unit cases in sessions.test.mjs (up from ~25), per-reason T-checklist breakdown, new `tests/ask-no-resume-guard.test.mjs` as structural regression guard independent of P2 test file (MiniMax).
+- **§0.2 hard-constraint scope corrected**: no longer claims ghost bug is --print-only; now states all modes affected (Kimi source-read). Wrapper-side validation defense-in-depth framing preserved.
+- **Next (overnight autonomous)**: plan v1 (writing-plans skill on spec v2) → codex plan review → plan v2 → worktree `feat/v0.2-p2-commands` → SDD → tests green. HARD STOP before PR create.
+
 ## 2026-04-23 [Claude Opus 4.7 — v0.2 P2 spec v1.2 + probe v4 (ghost-session CONFIRMED)]
 
 - **status**: probe v4 executed + spec v1.2 integrated probe findings. Commits: `7529f1e` probe v4 + `43b4bb5` spec v1.1 + v1.2 on top of that. All ahead of 6-way review.
