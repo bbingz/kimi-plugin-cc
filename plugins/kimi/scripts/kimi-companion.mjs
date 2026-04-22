@@ -37,6 +37,7 @@ import { binaryAvailable } from "./lib/process.mjs";
 import { ensureGitRepository, collectReviewContext, isEmptyContext } from "./lib/git.mjs";
 import { errorResult } from "./lib/errors.mjs";
 import { resolveRealCwd } from "./lib/paths.mjs";
+import { appendTimingHistory, TimingAccumulator } from "./lib/timing.mjs";
 
 // Plugin root is two levels above this file (scripts/kimi-companion.mjs →
 // plugins/kimi). Used for loading packaged schemas.
@@ -81,6 +82,39 @@ function resolveWorkspaceRoot(cwd) {
     if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
   } catch { /* not a git repo */ }
   return resolveRealCwd(cwd);
+}
+
+/**
+ * P1 timing hook. Call after a kimi-cli execution wrapper (callKimi /
+ * callKimiStreaming / callKimiReview / callKimiAdversarialReview) returns,
+ * once you've decided on the effective jobId + kind.
+ *
+ * `responseOverride` exists because review paths return {verdict, summary,
+ * findings, next_steps} not {response}; callers supply their own
+ * size-proxy string (e.g., JSON.stringify of the structured fields).
+ */
+function hookTimingForResult(result, { jobId, kind, prompt, requestedModel, responseOverride = null }) {
+  try {
+    let responseStr;
+    if (responseOverride != null) {
+      responseStr = responseOverride;
+    } else if (result?.ok) {
+      responseStr = result.response ?? "";
+    } else {
+      responseStr = result?.partialResponse ?? "";
+    }
+    const accum = new TimingAccumulator({
+      ...(result?.timings ?? {}),
+      exitCode: result?.exitCode ?? null,
+      signal:   result?.signal ?? null,
+      prompt,
+      response: responseStr,
+      requestedModel,
+    });
+    appendTimingHistory(jobId, kind, accum.toJSON());
+  } catch (err) {
+    try { process.stderr.write(`[timing] append failed for ${jobId || "?"}: ${err.message}\n`); } catch {}
+  }
 }
 
 const USAGE = `Usage: kimi-companion <subcommand> [options]
@@ -274,10 +308,22 @@ async function runAsk(rawArgs) {
       );
     }
     process.stdout.write(JSON.stringify(summary) + "\n");
+    hookTimingForResult(result, {
+      jobId: `ask-stream-${Date.now()}-${process.pid}`,
+      kind: "ask",
+      prompt: callArgs.prompt,
+      requestedModel: callArgs.model ?? null,
+    });
     process.exit(result.ok ? KIMI_EXIT.OK : (result.status ?? 1));
   }
 
   const result = callKimi(callArgs);
+  hookTimingForResult(result, {
+    jobId: `ask-${Date.now()}-${process.pid}`,
+    kind: "ask",
+    prompt: callArgs.prompt,
+    requestedModel: callArgs.model ?? null,
+  });
   if (options.json) {
     if (result.ok && !result.sessionId) {
       process.stderr.write(
@@ -435,6 +481,19 @@ async function runReview(rawArgs) {
     );
   }
 
+  hookTimingForResult(result, {
+    jobId: `review-${Date.now()}-${process.pid}`,
+    kind: "review",
+    prompt: "review",
+    requestedModel: options?.model ?? null,
+    responseOverride: JSON.stringify({
+      verdict: result?.verdict ?? null,
+      summary: result?.summary ?? "",
+      findings: result?.findings ?? [],
+      next_steps: result?.next_steps ?? [],
+    }),
+  });
+
   // Propagate kimi's exit status when the failure happened at the transport
   // layer (codex Phase-3-review C-H1). Without this, SIGINT/SIGTERM-killed
   // reviews would exit 1 instead of 130/143, losing Phase 2's signal
@@ -547,6 +606,19 @@ async function runAdversarialReview(rawArgs) {
     );
   }
 
+  hookTimingForResult(result, {
+    jobId: `adv-review-${Date.now()}-${process.pid}`,
+    kind: "adversarial-review",
+    prompt: "adversarial-review",
+    requestedModel: options?.model ?? null,
+    responseOverride: JSON.stringify({
+      verdict: result?.verdict ?? null,
+      summary: result?.summary ?? "",
+      findings: result?.findings ?? [],
+      next_steps: result?.next_steps ?? [],
+    }),
+  });
+
   process.exit(
     result.ok
       ? KIMI_EXIT.OK
@@ -639,6 +711,22 @@ async function runTask(rawArgs) {
       phase: "done",
       kimiSessionId: result.sessionId,
       pid: null,
+    });
+    hookTimingForResult(result, {
+      jobId: job.id,
+      kind: "task",
+      prompt,
+      requestedModel: streamConfig?.model ?? null,
+    });
+  } else {
+    // No job scope on this path (result.ok=false or sessionId missing) — use
+    // a synthetic id so the ndjson row still lands and downstream aggregation
+    // doesn't silently drop failures.
+    hookTimingForResult(result, {
+      jobId: `task-${Date.now()}-${process.pid}`,
+      kind: "task",
+      prompt,
+      requestedModel: streamConfig?.model ?? null,
     });
   }
 
