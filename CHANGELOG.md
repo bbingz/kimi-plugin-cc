@@ -4,10 +4,10 @@ Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gem
 
 ## 2026-04-23 [Claude Opus 4.7 + autonomous overnight SDD — v0.2 P2 New Commands (implementation ready for PR)]
 
-- **status**: all 15 implementation tasks landed on `feat/v0.2-p2-commands`. 104/104 tests pass (55 sessions unit + 11 integration + 3 ask-no-resume-guard + 35 P1 timing). Manual smoke matrix passed end-to-end (GHOST PROTECTION verified + symlinked-cwd resolve + BREAKING rejection + kimi.json snapshot-diff clean). PR #4 pending user morning review.
-- **branch tip**: `feat/v0.2-p2-commands` at `<T14 commit>` rebased on `main@b0c6d8f` (plan v2).
+- **status**: all 15 implementation tasks landed on `feat/v0.2-p2-commands`. 104/104 tests pass (55 sessions unit + 11 integration + 3 ask-no-resume-guard + 35 P1 timing). Manual smoke matrix passed end-to-end (GHOST PROTECTION verified + symlinked-cwd resolve + BREAKING rejection + kimi.json snapshot-diff clean). Codex final impl review returned 3 should-fix-before-ship (addressed inline) + 4 post-ship-followups (deferred). PR #4 created after Codex sign-off.
+- **branch tip**: `feat/v0.2-p2-commands` rebased on `main@b0c6d8f` (plan v2). 9 commits total (8 from SDD execution + 1 Codex-review fix).
 - **scope**: /kimi:continue + /kimi:resume + BREAKING removal of /kimi:ask --resume.
-- **task-commit map** (7 commits on feat branch):
+- **task-commit map** (9 commits on feat branch):
   - T1-T4: `f7113a1` lib/sessions.mjs + 55 unit tests (bundled)
   - T5:    `fd7627c` runContinue + runResume (mirror runAsk)
   - T6+T9: `235438e` BREAKING --resume removal + regression guard (T9 test was failing-first per TDD)
@@ -15,10 +15,10 @@ Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gem
   - T8:    `aa6ab65` integration tests (spawn-based; 11 cases)
   - T10:   `f27dc2e` README command list update
   - T11:   `8424029` sibling-backport-checklist P2 section
-  - T13:   lessons.md §I.3.P2 closeout (this commit)
-  - T14:   this CHANGELOG entry (this commit)
+  - T13+T14: `532eca2` lessons.md §I.3.P2 closeout + initial CHANGELOG entry
+  - Codex-fix: commands/continue.md + resume.md Case A/B split for resume-mismatch rendering + resume.md wording tightened + this CHANGELOG correction
 - **summary**:
-  - New `lib/sessions.mjs` (180 lines): `md5CwdPath`, `UUID_RE` (semi-strict 8-4-4-4-12), `sanitizeForStderr` (ANSI + control-char), `SESSION_ERROR_REASONS` + `mapSessionReason` (origin-aware exit status; null-safe ctx; sanitized substitutions), `resolveContinueTarget` (kimi.json array iteration + kaos filter per Kimi source-read of metadata.py:51-55), `validateResumeTarget` (statSync + isDirectory + isFile; FIFO / ELOOP / file-at-dir-pos / dangling-symlink all classified correctly).
+  - New `lib/sessions.mjs` (153 lines): `md5CwdPath`, `UUID_RE` (semi-strict 8-4-4-4-12), `sanitizeForStderr` (ANSI + control-char), `SESSION_ERROR_REASONS` + `mapSessionReason` (origin-aware exit status; null-safe ctx; sanitized substitutions), `resolveContinueTarget` (kimi.json array iteration + kaos filter per Kimi source-read of metadata.py:51-55), `validateResumeTarget` (statSync + isDirectory + isFile; FIFO / ELOOP / file-at-dir-pos / dangling-symlink all classified correctly).
   - `kimi-companion.mjs` gains `runContinue` + `runResume` async helpers mirroring runAsk pattern: realpath cwd normalization, resolve → validate → callKimi with `resumeSessionId` + `cwd`, `hookTimingForResult` with distinct `kind: 'continue'` / `'resume'` for observability, resume-mismatch warning + exit-1 on sessionId divergence.
   - BREAKING: `/kimi:ask --resume <sessionId>` and `/kimi:ask -r` removed. Explicit rejection at top of runAsk (parseArgs doesn't reject unknown long flags; would otherwise leak into prompt). Short-form `-r`, long-form `--resume`, and `--resume=<val>` equals-form all covered.
   - ask.md frontmatter updated (argument-hint drops --resume); new "Resuming a previous session" section points users to continue/resume.

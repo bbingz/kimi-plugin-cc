@@ -2,7 +2,7 @@
 
 Claude Code plugin integrating Moonshot Kimi CLI.
 
-**Status:** v0.1. See `docs/superpowers/specs/2026-04-20-kimi-plugin-cc-design.md` for design and `lessons.md` for migration experience.
+**Status:** v0.2 (P1 Timing + P3 Polish + P2 New Commands shipped). See `docs/superpowers/specs/` for per-phase design + `lessons.md` for migration experience.
 
 ## Prerequisites
 

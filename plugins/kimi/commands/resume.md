@@ -21,14 +21,20 @@ The companion runs in text mode and produces:
 4. Do NOT auto-apply suggestions.
 
 **If the companion exits non-zero**:
-1. Present the stderr `Error: ...` message clearly.
+
+**Case A — stderr begins with `Error: ...` (pre-call failure; no kimi response)**:
+1. Present the stderr `Error: ...` message clearly. stdout is empty — there is no kimi response to render.
 2. Add **exactly one declarative suggestion** based on the error text (same mapping as `/kimi:continue`):
    - "session <sessionId> not found for this directory" → "Verify the sessionId or omit the flag to start fresh via `/kimi:ask`."
-   - "session <sessionId> has no stored messages" → "The session directory exists but is empty on disk. Start a fresh session via `/kimi:ask`."
+   - "session <sessionId> has no stored messages" → "The session directory exists but is empty on disk (rare; usually user-created or corrupted). Start a fresh session via `/kimi:ask`."
    - "invalid sessionId format" → "Pass a valid UUID (8-4-4-4-12 hex). List your sessions by inspecting `~/.kimi/sessions/` if needed."
    - "filesystem access failed" → "Check ~/.kimi/ directory and file permissions; ensure your current shell user owns the path."
-3. If stderr contains a "Warning: requested --resume ... did not match returned session ..." line, surface it prominently — the session continuity contract failed even though kimi produced an answer.
-4. Do NOT retry automatically.
+3. Do NOT retry automatically.
+
+**Case B — stderr contains `Warning: requested --resume ... did not match returned session ...` AND stdout is populated (resume-mismatch; kimi DID produce an answer but session-continuity failed)**:
+1. **Present the stdout response verbatim** (response + footer line — same as the exit-0 path). The answer kimi gave is valid; don't drop it.
+2. After the footer, append exactly one note on a fresh line: "Note: kimi started a fresh session — prior context was NOT carried over. The answer above is standalone."
+3. Do NOT retry. Do NOT offer suggestions — the user asked for a specific session and should decide whether to accept this fresh-session answer or explicitly start over.
 
 ### Notes
 
