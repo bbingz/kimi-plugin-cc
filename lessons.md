@@ -373,14 +373,16 @@ looked at it already knew it was a stub.
 
 **P3 polish batch landed (2026-04-22, one PR, tag `v0.2-p3-polish`)**:
 
-- ✅ **C1** — `paths.mjs` extracted; `lessons.md §Pit 4` v0.2 gap closed
-- ✅ **C2** — `errorResult` canonical envelope in `lib/errors.mjs`; 4 catch sites + 2 review fallbacks + reviewError composition migrated
-- ✅ **C3** — defensive `MAX_PROMPT_CHARS = 1_000_000` cap in `callKimi*` (rationale: kimi stdin ceiling unprobed, NOT kernel `E2BIG` — v1 was factually wrong)
-- ✅ **C4** — `runLLM` seam in `runStreamingWorker` via `dispatchStreamWorker` post-JSON injection (v1 task-spawn config injection was broken; 3-way review CRITICAL 1)
-- ✅ **C5** — `enrichJob` pure + `enrichJobFromDisk` IO wrapper; full status read-only decoupling deferred (§I.2)
-- ✅ **C6** — `KIMI_JOB_TTL_DAYS` + SessionEnd narrowing (keeps terminal jobs); loadState UNCHANGED (unlocked hook RMW constraint; 3-way review gemini CRITICAL); physical purge in updateState lock; completedAt persist at 3 terminal sites (v1 missed this — 3-way review codex CRITICAL 3)
-- ✅ **C7** — README + sub-CHANGELOG migration note (pre-v0.1 `gr-*/gt-*` residue; commit `aa0bde6` rename)
-- ✅ **C8** — `maxDiffChars` parameter in `runReviewPipeline`; constant `MAX_REVIEW_DIFF_BYTES` name kept for back-compat + clarifying comment
+- ✅ **C1** (`ffc2726`) — `paths.mjs` extracted; `lessons.md §Pit 4` v0.2 gap closed
+- ✅ **C2** (`3f94f4c`) — `errorResult` canonical envelope in `lib/errors.mjs`; 4 catch sites + 2 review fallbacks + reviewError composition migrated
+- ✅ **C3** (`a946c86` + polish-patch `31e1b45` for shape-merge) — defensive `MAX_PROMPT_CHARS = 1_000_000` cap in `callKimi*` (rationale: kimi stdin ceiling unprobed, NOT kernel `E2BIG` — v1 was factually wrong)
+- ✅ **C4** (`5a221c0`) — `runLLM` seam in `runStreamingWorker` via `dispatchStreamWorker` post-JSON injection (v1 task-spawn config injection was broken; 3-way review CRITICAL 1)
+- ✅ **C5** (`355e962`) — `enrichJob` pure + `enrichJobFromDisk` IO wrapper; full status read-only decoupling deferred (§I.2)
+- ✅ **C6** (`b50e1b4` + polish-patch `31e1b45` for `/kimi:result` filter parity) — `KIMI_JOB_TTL_DAYS` + SessionEnd narrowing (keeps terminal jobs); loadState UNCHANGED (unlocked hook RMW constraint; 3-way review gemini CRITICAL); physical purge in updateState lock; completedAt persist at 3 terminal sites (v1 missed this — 3-way review codex CRITICAL 3)
+- ✅ **C7** (`4c69bff`) — README + sub-CHANGELOG migration note (pre-v0.1 `gr-*/gt-*` residue; commit `aa0bde6` rename)
+- ✅ **C8** (`bad5ab0` + polish-patch `31e1b45` for reviewError thread-through) — `maxDiffChars` parameter in `runReviewPipeline`; constant `MAX_REVIEW_DIFF_BYTES` name kept for back-compat + clarifying comment
+- ✅ **Templates** (`e1f8ffb`) — phase-1-template T.6 errorResult + paths.mjs in Create list; sibling-backport-checklist Post-P3 section (8 C-items)
+- ✅ **Integration** (`3f3a750`) — root CHANGELOG entry; tag `v0.2-p3-polish` applied
 
 ### I.2 Conditional-defer registry (post-P3, 2026-04-22)
 
