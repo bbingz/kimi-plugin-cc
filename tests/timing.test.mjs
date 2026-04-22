@@ -341,3 +341,73 @@ describe("percentile / filterHistory / computeAggregateStats", () => {
     assert.equal(s.validCount, 1);
   });
 });
+
+import {
+  renderSingleJobDetail,
+  renderHistoryTable,
+  renderAggregateTable,
+} from "../plugins/kimi/scripts/lib/timing.mjs";
+
+describe("renderers", () => {
+  const rec = (overrides = {}) => ({
+    jobId: "k7a3f9e2-x1",
+    kind: "ask",
+    recordedAt: 1729862400123,
+    schemaVersion: 1,
+    spawnedAt: 1,
+    firstEventMs: 217,
+    streamMs: 3783,
+    tailMs: 45,
+    totalMs: 4045,
+    promptBytes: 128,
+    responseBytes: 432,
+    exitCode: 0,
+    terminationReason: "exit",
+    timedOut: false,
+    signal: null,
+    bgWaitEntered: false,
+    requestedModel: "kimi-code/kimi-for-coding",
+    usage: [],
+    tokensPerSec: null,
+    coldStartPhases: null,
+    invariantOk: true,
+    invariantKind: "3term",
+    ...overrides,
+  });
+
+  it("renderSingleJobDetail contains jobId + totals + 'Served model: unknown' footer", () => {
+    const out = renderSingleJobDetail(rec());
+    assert.match(out, /k7a3f9e2-x1/);
+    assert.match(out, /4045/);
+    assert.match(out, /Served model: unknown/);
+  });
+
+  it("renderSingleJobDetail: compact fallback when totalMs < 200", () => {
+    const out = renderSingleJobDetail(rec({ firstEventMs: 45, streamMs: 81, tailMs: 17, totalMs: 143 }));
+    assert.match(out, /total=143/);
+    // Compact form: no bar lines
+    assert.doesNotMatch(out, /█/);
+  });
+
+  it("renderSingleJobDetail: bgWaitEntered=true adds note line", () => {
+    const out = renderSingleJobDetail(rec({ bgWaitEntered: true }));
+    assert.match(out, /bgWaitEntered=true/);
+  });
+
+  it("renderHistoryTable handles empty records", () => {
+    const out = renderHistoryTable([]);
+    assert.match(out, /No timing records matched the current filters\./);
+  });
+
+  it("renderAggregateTable handles empty / single / 20-record stats", () => {
+    const empty = renderAggregateTable({ validCount: 0, excludedInvariant: 0, excludedBgWait: 0, percentiles: {}, slowest: null }, { kind: "ask" });
+    assert.match(empty, /No timing records matched the current filters\./);
+    const oneRec = renderAggregateTable({
+      validCount: 1, excludedInvariant: 0, excludedBgWait: 0,
+      percentiles: { p50: { firstEventMs: 100, streamMs: 200, tailMs: 50, totalMs: 350 }, p95: null, p99: null },
+      slowest: { jobId: "x", totalMs: 350 },
+    }, { kind: "ask" });
+    assert.match(oneRec, /p50/);
+    assert.match(oneRec, /—/);   // em-dash for absent p95/p99
+  });
+});

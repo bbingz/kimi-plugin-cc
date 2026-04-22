@@ -292,3 +292,135 @@ export function computeAggregateStats(records) {
     slowest,
   };
 }
+
+function formatMs(ms) {
+  if (ms == null) return "—";
+  return `${Math.round(ms)}`;
+}
+
+function truncateId(id, max = 13) {
+  if (!id) return "???";
+  return id.length <= max ? id : id.slice(0, max - 3) + "...";
+}
+
+function formatBar(value, max, width = 20) {
+  if (max <= 0 || value == null || value < 0) return "";
+  const chars = Math.round((value / max) * width);
+  return "█".repeat(Math.max(0, Math.min(width, chars))) || "▏";
+}
+
+const FOOTER_NOTE =
+  "Served model: unknown (1.37 does not surface per-model usage — see doc/probe/probe-results-v4.json Q1)";
+
+export function renderSingleJobDetail(record) {
+  if (!record) return "No timing record.\n";
+  const lines = [];
+  const { jobId, kind, requestedModel, totalMs, firstEventMs, streamMs, tailMs,
+          promptBytes, responseBytes, exitCode, terminationReason, invariantOk,
+          invariantKind, bgWaitEntered } = record;
+
+  // Compact fallback for small totals (spec §4 SH4 fix)
+  if (totalMs != null && totalMs < 200) {
+    lines.push(
+      `Job ${jobId} (kind=${kind}, total=${formatMs(totalMs)} ms)  ` +
+      `cold ${formatMs(firstEventMs)} · stream ${formatMs(streamMs)} · tail ${formatMs(tailMs)}  ` +
+      `${invariantOk ? "✓" : "✗"} ${invariantKind} v1`
+    );
+    if (bgWaitEntered) lines.push(`  Note: bgWaitEntered=true — tail may include bg-poll wait, excluded from --stats.`);
+    return lines.join("\n") + "\n";
+  }
+
+  // Full bar-chart detail
+  lines.push(`Job ${jobId} (kind=${kind}, model=${requestedModel || "null"})`);
+  lines.push("─".repeat(59));
+  const intervals = [
+    ["cold    (spawn → 1st event)", firstEventMs],
+    ["stream  (1st → last event)", streamMs],
+    ["tail    (last event → close)", tailMs],
+  ];
+  const maxInterval = Math.max(...intervals.map(([, v]) => v ?? 0));
+  for (const [label, v] of intervals) {
+    const msStr = formatMs(v).padStart(6);
+    const bar = formatBar(v, maxInterval);
+    lines.push(`  ${label}  ${msStr} ms   ${bar}`);
+  }
+  lines.push("  " + "─".repeat(41));
+  lines.push(`  total                            ${formatMs(totalMs).padStart(4)} ms`);
+  lines.push("");
+  lines.push(`  prompt bytes:    ${promptBytes}`);
+  lines.push(`  response bytes:  ${responseBytes}`);
+  lines.push(`  exit:            ${exitCode ?? "null"} (${terminationReason})`);
+  lines.push(`  schema:          ${invariantKind} v1  ${invariantOk ? "✓ invariant OK" : "✗ invariant broken"}`);
+  lines.push("");
+  if (bgWaitEntered) {
+    lines.push(`  Note: bgWaitEntered=true — tail may include bg-poll wait, excluded from --stats.`);
+  }
+  lines.push(`  ${FOOTER_NOTE}`);
+  return lines.join("\n") + "\n";
+}
+
+export function renderHistoryTable(records, { kind = "all", since = "all" } = {}) {
+  if (!records || records.length === 0) {
+    return "No timing records matched the current filters.\n";
+  }
+  const lines = [];
+  lines.push(`Last ${records.length} jobs (kind=${kind}, since=${since}):`);
+  lines.push("");
+  lines.push("JobId         Kind    Cold   Stream   Tail   Total    Model                    Exit  ✓");
+  for (const r of records) {
+    const cold = r.firstEventMs ?? null;
+    const stream = r.streamMs ?? null;
+    const tail = r.tailMs ?? null;
+    const total = r.totalMs ?? null;
+    const mark = r.invariantOk ? "✓" : `✗ (${r.terminationReason || "?"})`;
+    const model = (r.requestedModel || "").slice(0, 24).padEnd(24);
+    lines.push(
+      `${truncateId(r.jobId).padEnd(13)} ` +
+      `${(r.kind || "").padEnd(7)} ` +
+      `${(cold == null ? "--" : formatMs(cold)).padStart(4)}  ` +
+      `${(stream == null ? "--" : formatMs(stream)).padStart(6)} ` +
+      `${(tail == null ? "--" : formatMs(tail)).padStart(5)} ` +
+      `${(total == null ? "--" : formatMs(total)).padStart(6)}  ` +
+      `${model} ` +
+      `${String(r.exitCode ?? "-").padStart(3)}  ${mark}`
+    );
+  }
+  return lines.join("\n") + "\n";
+}
+
+export function renderAggregateTable(stats, { kind = "all" } = {}) {
+  if (!stats || stats.validCount === 0) {
+    return "No timing records matched the current filters.\n";
+  }
+  const lines = [];
+  const header = `Aggregate stats (kind=${kind}, n=${stats.validCount} valid`;
+  const parts = [header];
+  if (stats.excludedInvariant > 0) parts.push(` / ${stats.excludedInvariant} excluded for invariantOk=false`);
+  if (stats.excludedBgWait > 0)    parts.push(` / ${stats.excludedBgWait} excluded for bgWaitEntered=true`);
+  parts.push("):");
+  lines.push(parts.join(""));
+  lines.push("");
+  lines.push("              Cold       Stream      Tail      Total");
+  for (const p of ["p50", "p95", "p99"]) {
+    const row = stats.percentiles[p];
+    if (!row) {
+      lines.push(`${p.padEnd(14)}—`);
+      continue;
+    }
+    lines.push(
+      `${p.padEnd(14)}` +
+      `${formatMs(row.firstEventMs).padStart(6)}  ` +
+      `${formatMs(row.streamMs).padStart(10)}  ` +
+      `${formatMs(row.tailMs).padStart(6)}  ` +
+      `${formatMs(row.totalMs).padStart(10)}`
+    );
+  }
+  lines.push("");
+  if (stats.slowest) {
+    lines.push(`Slowest: ${stats.slowest.jobId} (total=${stats.slowest.totalMs} ms)`);
+    lines.push("");
+  }
+  lines.push("Note: 3-term schema — ttft/tool/retry/per-model metrics not available on kimi 1.37.");
+  lines.push("      (see doc/probe/probe-results-v4.json §implications_for_p1_timing)");
+  return lines.join("\n") + "\n";
+}
