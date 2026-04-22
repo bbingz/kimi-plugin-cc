@@ -37,7 +37,16 @@ import { binaryAvailable } from "./lib/process.mjs";
 import { ensureGitRepository, collectReviewContext, isEmptyContext } from "./lib/git.mjs";
 import { errorResult } from "./lib/errors.mjs";
 import { resolveRealCwd } from "./lib/paths.mjs";
-import { appendTimingHistory, TimingAccumulator } from "./lib/timing.mjs";
+import {
+  appendTimingHistory,
+  TimingAccumulator,
+  loadTimingHistory,
+  filterHistory,
+  computeAggregateStats,
+  renderSingleJobDetail,
+  renderHistoryTable,
+  renderAggregateTable,
+} from "./lib/timing.mjs";
 
 // Plugin root is two levels above this file (scripts/kimi-companion.mjs →
 // plugins/kimi). Used for loading packaged schemas.
@@ -138,6 +147,8 @@ Subcommands:
                                        terminal session; --any-session reaches jobs submitted from
                                        other terminals (useful when the jobId is forgotten).
   task-resume-candidate [--json]       Probe for a resumable prior task (used by /kimi:rescue).
+  timing [--last | <jobId> | --history [--last N] | --stats] [--kind K] [--since D]
+                                       Show timing telemetry for recent ask/task/review calls (read-only).
 
 (Internal: _worker / _stream-worker are background re-entry points; do not call directly.)`;
 
@@ -960,6 +971,126 @@ async function dispatchStreamWorker(rawArgs) {
   process.exit(0);
 }
 
+async function runTimingCommand(rawArgs) {
+  // Parse args: [--last | <jobId> | --history | --stats] [--last N] [--kind K] [--since D]
+  let mode = null;               // "last" | "history" | "stats"
+  let positionalJobId = null;
+  let lastN = null;
+  let kind = null;
+  let since = null;
+  let i = 0;
+  while (i < rawArgs.length) {
+    const arg = rawArgs[i];
+    if (arg === "--last") {
+      const next = rawArgs[i + 1];
+      if (next != null && /^\d+$/.test(next)) {
+        // Count form (inside --history)
+        lastN = Number(next);
+        i += 2;
+      } else {
+        // Bare --last → detail of most recent
+        // M3 fix: bare --last after a positional jobId is ambiguous — exit mutex
+        if (positionalJobId != null) return exitMutex();
+        if (mode != null && mode !== "last") return exitMutex();
+        mode = "last";
+        i += 1;
+      }
+    } else if (arg === "--history") {
+      if (mode != null && mode !== "history") return exitMutex();
+      mode = "history";
+      i += 1;
+    } else if (arg === "--stats") {
+      if (mode != null && mode !== "stats") return exitMutex();
+      mode = "stats";
+      i += 1;
+    } else if (arg === "--kind") {
+      const next = rawArgs[i + 1];
+      if (next == null || next.startsWith("--")) {                // M3 fix: validate --kind has a value
+        process.stderr.write(`Error: --kind requires a value (e.g. --kind ask)\n`);
+        process.exit(2);
+      }
+      kind = next;
+      i += 2;
+    } else if (arg === "--since") {
+      const next = rawArgs[i + 1];
+      if (next == null || next.startsWith("--")) {                // M3 fix: validate --since has a value
+        process.stderr.write(`Error: --since requires a value (e.g. --since 24h)\n`);
+        process.exit(2);
+      }
+      since = next;
+      i += 2;
+    } else if (!arg.startsWith("--")) {
+      // Positional jobId (detail mode)
+      if (positionalJobId != null || mode != null) return exitMutex();
+      positionalJobId = arg;
+      i += 1;
+    } else {
+      process.stderr.write(`Error: unknown argument '${arg}'\n`);
+      process.exit(2);
+    }
+  }
+  if (mode == null && positionalJobId == null) mode = "history";
+
+  // Read the ndjson
+  let records;
+  try { records = loadTimingHistory(); }
+  catch (err) {
+    process.stderr.write(`Error reading timings: ${err.message}\n`);
+    process.exit(1);
+  }
+
+  // Empty data
+  if (records.length === 0) {
+    process.stdout.write("No timing records yet. Run a /kimi:ask first.\n");
+    process.exit(0);
+  }
+
+  try {
+    if (positionalJobId) {
+      const rec = records.find((r) => r.jobId === positionalJobId);
+      if (!rec) {
+        process.stderr.write(`No timing record for job '${positionalJobId}'\n`);
+        process.exit(1);
+      }
+      process.stdout.write(renderSingleJobDetail(rec));
+      process.exit(0);
+    }
+    if (mode === "last") {
+      const rec = records[records.length - 1];
+      process.stdout.write(renderSingleJobDetail(rec));
+      process.exit(0);
+    }
+    if (mode === "history") {
+      const filtered = filterHistory(records, { kind, last: lastN ?? 20, since });
+      process.stdout.write(renderHistoryTable(filtered, { kind: kind ?? "all", since: since ?? "all" }));
+      process.exit(0);
+    }
+    if (mode === "stats") {
+      let filtered = filterHistory(records, { kind, since });
+      // Normalize filter output: renderAggregateTable expects records with .timing nested
+      // Our ndjson records have top-level fields (spawnedAt, firstEventMs, etc.) — wrap them.
+      const wrapped = filtered.map((r) => ({
+        jobId: r.jobId,
+        timing: r,   // all fields live at top level in ndjson
+      }));
+      const stats = computeAggregateStats(wrapped);
+      process.stdout.write(renderAggregateTable(stats, { kind: kind ?? "all" }));
+      process.exit(0);
+    }
+  } catch (err) {
+    if (/out of range|invalid/.test(err.message)) {
+      process.stderr.write(`Error: ${err.message}\n`);
+      process.exit(2);
+    }
+    throw err;
+  }
+}
+
+function exitMutex() {
+  process.stderr.write("Error: --last, <jobId>, --history, --stats are mutually exclusive\n");
+  process.exit(2);
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   let [sub, ...rest] = argv;
@@ -987,6 +1118,8 @@ async function main() {
       return runJobCancel(rest);
     case "task-resume-candidate":
       return runTaskResumeCandidate(rest);
+    case "timing":
+      return runTimingCommand(rest);
     case "_worker":
       return dispatchWorker(rest);
     case "_stream-worker":
