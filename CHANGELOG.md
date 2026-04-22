@@ -2,6 +2,29 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-22 [Claude Opus 4.7 — v0.2 P2 spec v1 (pre-probe + pre-6-way-review)]
+
+- **status**: spec v1 drafted on main — `docs/superpowers/specs/2026-04-22-v0.2-p2-new-commands-design.md`. Awaits probe v5 execution + 6-way review before revising to v2.
+- **scope**: 2 new slash commands (`/kimi:continue <prompt>`, `/kimi:resume <sessionId> <prompt>`) + new `lib/sessions.mjs` (pure resolve/validate) + **BREAKING** removal of `/kimi:ask --resume` flag (sibling alignment — gemini/minimax/qwen all have `ask = new conversation only`).
+- **summary**:
+  - Hard constraint: probe v4 Q5 confirmed `kimi --print -r <bogus-uuid>` silently creates ghost sessions. All P2 resume entries pre-validate wrapper-side before invoking `kimi -r`. Strict hard-fail on all error reasons (no soft fallback).
+  - Data source: `~/.kimi/kimi.json` → `work_dirs[realCwd].last_session_id` (continue) + `~/.kimi/sessions/<md5(realCwd)>/<uuid>/` existence + ≥1-message check (both commands). Cross-cwd resume disallowed.
+  - Error registry adds 7 reason codes to `lib/errors.mjs` via new `mapSessionReason()` helper; all stderr templates are literal strings pinned in spec §6.1.
+  - P1 `hookTimingForResult` is called at the terminal site of each new branch, so `/kimi:timing --last` reflects resume calls.
+  - Tests: `tests/sessions.test.mjs` (~25 cases) + `tests/commands-p2.test.mjs` (integration + ask.md removal regression).
+  - Probe v5 scope: 4 required (kimi.json schema, sessions dir layout, cross-cwd UUID collision possibility, ghost-session on-disk shape) + 1 optional (native list-sessions subcommand). Throwaway cwd methodology to avoid polluting real `~/.kimi/` state.
+- **Brainstorm decisions locked** (bbing approved every point):
+  - scope: `/kimi:continue` + `/kimi:resume <id>` (no `/kimi:list-sessions` — YAGNI)
+  - positioning: sugar + unified-validation helper (shared lib; ask.md internals converge)
+  - signature: prompt mandatory, no flags on the new commands (no `--model` / `--stream` in v1)
+  - data source: kimi.json + sessions double-read
+  - validation-failure UX: hard fail, no soft fallback
+  - edge matrix: all strict (5 hard-fail scenarios with literal error templates)
+  - probe v5: required 4 + optional 1
+  - sibling alignment: reviewed gemini/minimax/qwen (none has `ask --resume`) → drove the ask.md removal decision
+  - ask.md handling: **remove `--resume`** (A1 of 3 options presented) — kimi was the sibling-series outlier; P2 is the window to close that
+- **next**: probe v5 execution + commit → spec v2 if probe invalidates any §2.4 assumption → 6-way spec review → plan (3-way review) → worktree `feat/v0.2-p2-commands` → SDD → PR #4.
+
 ## 2026-04-22 [Claude Opus 4.7 + subagent-driven-development — v0.2 P1 Timing (shipped)]
 
 - **status**: shipped on `feat/v0.2-p1-timing` — spec `2f49340` v3 (`docs/superpowers/specs/2026-04-22-v0.2-p1-timing-design.md`), plan `3389d95` v2 (`docs/superpowers/plans/2026-04-22-v0.2-p1-timing-plan.md`), 12 tasks, 13 commits (T2 was 2 commits due to a mid-execution test-fix correction)
