@@ -2,6 +2,12 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-22 [Codex]
+
+- **status**: added
+- **scope**: docs/templates
+- **summary**: phase-1-template T.6 errorResult signature -> P3 canonical (kind field added, events/textParts dropped); paths.mjs added to Create list. sibling-backport-checklist gets Post-P3 section (C1-C8) covering all P3 items with V2-corrected C6 filter placement (loadState UNCHANGED) and C4 injection point (dispatchStreamWorker, not task-spawn).
+
 ## 2026-04-22 [Claude Opus 4.7 — v0.2 P3 Task 7 (C6): SessionEnd narrowing + TTL split]
 
 - **status**: done (Task 7 of 11 in v0.2 P3 polish batch, executed in worktree `feat/v0.2-p3-polish`)

@@ -44,6 +44,7 @@ Global find-and-replace these 9 tokens when copying this template into a new plu
 **Create (repo root):** `.gitignore`, `README.md`, `CLAUDE.md`, `.claude-plugin/marketplace.json`, `plugins/{{LLM}}/.claude-plugin/plugin.json`, `plugins/{{LLM}}/CHANGELOG.md`
 
 **Create (plugin lib):** `plugins/{{LLM}}/scripts/lib/args.mjs`, `process.mjs`, `git.mjs`, `state.mjs` — (`render.mjs` was proven dead in v0.1 post-review and is NO LONGER ported; see T.5 below for the deletion notice)
+- **`paths.mjs`** — realpath helper (`resolveRealCwd`); copy verbatim from `kimi-plugin-cc@v0.2-p3-polish`. Zero provider-specific strings. Consumers: `<llm>-companion.mjs` at every spawn handler + both hooks' `resolveWorkspaceRoot` non-git fallback.
 
 **Create (plugin core):** `plugins/{{LLM}}/scripts/lib/{{LLM}}.mjs` — CLI-specific primitives (spawn + parse + session-id + model config + errors); THIS IS THE PROVIDER-SPECIFIC FILE. Every sibling plugin writes it from scratch.
 
@@ -337,10 +338,11 @@ export function describe{{LLM_CAP}}Exit(status, { stderr = "", stdout = "" } = {
 // propagate exit codes). Pass `status: null` when the failure isn't
 // transport-layer (e.g. schema-load error). Empty `status` means Claude's
 // render layer falls back to generic exit 1.
-export function errorResult({ status = null, error, stdout = "", events = [], textParts = [] }) {
-  /* uniform shape — include `status` field so review.mjs exit-code
-     propagation works; include `partialResponse` derived from stdout/events
-     so debug-mode consumers can see what kimi actually produced */
+export function errorResult({ kind, error, status = null, stdout = "", detail = null }) {
+  // Canonical transport-error envelope. kind ∈ "ask" | "review" |
+  // "adversarial-review" | "task" — aligns sibling plugins with the
+  // kimi P3 polish batch (2026-04-22).
+  return { ok: false, kind, error, status, stdout, detail };
 }
 
 // Core CLI functions

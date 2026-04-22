@@ -431,4 +431,79 @@ export function formatTruncationNotice(maxDiffBytes) {
 
 This doc captures the state of post-phase-5 polish in kimi-plugin-cc. Future kimi fixes may add to this list. When kimi tags a new `phase-N-post-review-M`, diff against the previous tag and append any new backport items below. Don't retroactively rewrite P0/P1/P2 labels — they're calibrated to the risk *at time of discovery*, which is useful archaeology.
 
-Last updated: 2026-04-21, reflecting kimi-plugin-cc commit `54f2fd0` (tag `phase-5-post-review-3`).
+---
+
+## Post-P3 additions (2026-04-22; target: kimi-plugin-cc@v0.2-p3-polish)
+
+P3 adds 8 polish items to v0.1; sibling forks should apply the following. Several are **rename-only** and mechanical; the adapter seam (P3-C4) intentionally stops short of full abstraction because the "minimax on the other side" data point isn't in yet. When it arrives, extend; don't pre-abstract.
+
+### P3-C1. Copy `paths.mjs` verbatim
+
+**Action:** copy `plugins/kimi/scripts/lib/paths.mjs` byte-for-byte into `plugins/<llm>/scripts/lib/paths.mjs`. Zero string substitution. File contains only `node:fs` import + `resolveRealCwd` function.
+
+Import from `<llm>-companion.mjs` + both hooks (`session-lifecycle-hook.mjs` + `stop-review-gate-hook.mjs`). Their `resolveWorkspaceRoot` non-git fallback must call `resolveRealCwd(cwd)` instead of returning raw `cwd`.
+
+### P3-C2. Canonical `errorResult` in `lib/errors.mjs` + catch-block migration
+
+**Action:** create neutral leaf module `plugins/<llm>/scripts/lib/errors.mjs` (NOT in job-control.mjs — that would circular-dep with <llm>.mjs which already imports from it). Export `errorResult({ kind, error, status = null, stdout = "", detail = null })`.
+
+Migrate every `{ ok: false, error: <msg> }` catch-block write in `<llm>-companion.mjs` to `errorResult({ kind: "<cmd>", error: <msg> })` where `<cmd>` ∈ `"ask" | "review" | "adversarial-review" | "task"`.
+
+If your `<llm>.mjs` has a local `errorResult` function (kimi's did — stream-specific, returns `partialResponse + events`), rename it to `streamErrorResult` and add `import { errorResult } from "./errors.mjs"` for the canonical helper's new callers (notably C3's guard). Also update `reviewError` in `review.mjs` to compose the base envelope by spreading `...errorResult({kind: "review", error, status})` at the top of its return.
+
+### P3-C3. Defensive `MAX_PROMPT_CHARS` cap in `<llm>.mjs`
+
+**Action:** add `MAX_PROMPT_CHARS = 1_000_000` constant + `checkPromptSize(prompt, { kind, label })` helper to `<llm>.mjs`; guard `call<Llm>` + `call<Llm>Streaming` with early return. Measurement is char count (UTF-16 code units), not bytes — kimi's rationale applies identically to any provider using stdin for prompts.
+
+If your `call<Llm>Streaming` returns a Promise (likely), wrap the early return with `Promise.resolve(guardResult)` to preserve the Promise contract.
+
+### P3-C4. `runLLM` seam via `dispatchStreamWorker` injection (NOT task-spawn config)
+
+**Action:** in `job-control.mjs`, remove the direct import of `call<Llm>Streaming`; make `runStreamingWorker` read `config.runLLM` (with guard). In `<llm>-companion.mjs`'s `dispatchStreamWorker` function, inject `config.runLLM = call<Llm>Streaming;` AFTER the `JSON.parse` line that rehydrates the config file, BEFORE the `try { await runStreamingWorker(...) }` block.
+
+**Why not at task-spawn site?** The background-worker path serializes config via `JSON.stringify`; functions cannot cross JSON. Injection must be in the child process after rehydration. This was CRITICAL in kimi's 3-way plan review.
+
+**Residual rename targets (not covered by C4 — sed these when forking):**
+- `SESSION_ID_ENV = "KIMI_COMPANION_SESSION_ID"` → `"<LLM_UPPER>_COMPANION_SESSION_ID"` (user-visible env var; cross-file contract)
+- `KIMI_STATUS_TIMED_OUT` import from `./<llm>.mjs` (naming follows provider)
+- `kimiSessionId` field (in state.json + ~8 code references) → `<llm>SessionId`
+
+These three weren't abstracted because doing so without a second real plugin would be premature. If your fork hits friction on any, extend the abstraction in the kimi repo and we all benefit.
+
+### P3-C5. `enrichJob` pure + IO wrapper split
+
+**Action:** `enrichJob(job, { logPreview, isAlive })` becomes pure (exported); returns `{ enriched, shouldPersistZombie }`. Thin `enrichJobFromDisk(job, workspaceRoot)` wrapper does IO + optional `upsertJob` persist. Callers on the status read path switch to the wrapper. Future decoupling of status-reads-mutate-state is deferred in kimi's lessons.md §I.2.
+
+### P3-C6. `<LLM_UPPER>_JOB_TTL_DAYS` + correct filter placement
+
+**Action:** env var name is provider-scoped — rename `KIMI_JOB_TTL_DAYS` → `<LLM_UPPER>_JOB_TTL_DAYS` when forking. Export `DEFAULT_TTL_DAYS = 7`, `resolveTtlMs()`, `filterExpired()` from state.mjs (these stay generic). Stderr warning prefix `[kimi]` → `[<llm>]`.
+
+**CRITICAL placement (caught by kimi's 3-way plan review)**:
+- `loadState` MUST NOT be modified (UNCHANGED from v0.1). Reason: hooks like `session-lifecycle-hook.mjs` do unlocked `loadState → saveState`; if loadState filtered, the hook would durably purge outside any lock.
+<!-- loadState MUST NOT be modified -->
+- `updateState` applies `filterExpired` INSIDE its lock, between `loadState` and `mutate`. This is the ONLY physical-purge path.
+- Render path (e.g., `<llm>-companion.mjs`'s `runJobStatus`) applies `filterExpired` to the jobs list before rendering — this is the user-facing purged view.
+
+SessionEnd's `cleanupSessionJobs` filter becomes status-aware: keep `completed | failed | cancelled` even for ended session; drop only `running | starting | queued`.
+
+### P3-C7. **kimi-only** — do NOT copy
+
+kimi's `gr-*/gt-*` migration note is kimi-specific history. Siblings never inherited the gemini-derived prefix — skip this item entirely.
+
+### P3-C8. `maxDiffChars` parameterization in `review.mjs`
+
+**Action:** `runReviewPipeline` signature adds `maxDiffChars` parameter; default = `MAX_REVIEW_DIFF_BYTES` constant (historically named "bytes" but measures chars — back-compat; leave with clarifying comment). `truncationNotice` default auto-derives from `maxDiffChars` via `formatTruncationNotice(maxDiffChars)`.
+
+---
+
+## Verification checklist additions (post-P3)
+
+- [ ] `grep -rn "fs.realpathSync" plugins/<llm>/scripts/` returns exactly one runtime match (in `lib/paths.mjs`; comment-only hits in other files are acceptable)
+- [ ] `grep -n "call<Llm>Streaming" plugins/<llm>/scripts/lib/job-control.mjs` returns zero matches (import + call removed; `runLLM` seam active)
+- [ ] `grep -n "kimi\|Kimi\|KIMI" plugins/<llm>/scripts/lib/paths.mjs` returns zero matches
+- [ ] `grep -n "kimi\|Kimi\|KIMI" plugins/<llm>/scripts/lib/errors.mjs` returns zero matches
+- [ ] `<LLM_UPPER>_JOB_TTL_DAYS=0 /<llm>:status --json` retains expired jobs; `=abc` emits `[<llm>] ignoring invalid` stderr warning + falls back to default
+- [ ] SessionEnd narrowing: running-then-ended-session jobs get dropped; completed-then-ended-session jobs stay until TTL
+- [ ] `loadState` body contains ZERO references to `filterExpired` / `resolveTtlMs` (anti-regression — this was a v1-plan bug)
+
+Last updated: 2026-04-22, reflecting kimi-plugin-cc commit `v0.2-p3-polish` (P3 integration; supersedes Phase 5 and incorporates 6-way-review-approved design spec + 3-way-review-on-plan findings).
