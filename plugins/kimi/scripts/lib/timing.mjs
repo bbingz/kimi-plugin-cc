@@ -212,3 +212,83 @@ export function loadTimingHistory({ limit = null } = {}) {
   }
   return limit != null ? records.slice(-limit) : records;
 }
+
+export function percentile(values, p) {
+  const filtered = values.filter((v) => v != null && typeof v === "number" && Number.isFinite(v));
+  if (filtered.length === 0) return null;
+  const sorted = filtered.slice().sort((a, b) => a - b);
+  const rank = Math.ceil(p * sorted.length);
+  const idx = Math.max(0, Math.min(sorted.length - 1, rank - 1));
+  return sorted[idx];
+}
+
+const SINCE_RE = /^(\d+)([mhd])$/;
+const SINCE_RANGES = {
+  m: { min: 1, max: 9999 },
+  h: { min: 1, max: 9999 },
+  d: { min: 1, max: 365 },
+};
+
+function parseSince(value) {
+  const m = String(value).match(SINCE_RE);
+  if (!m) throw new Error(`invalid --since value '${value}' (expected e.g. 30m, 24h, 7d)`);
+  const n = Number(m[1]);
+  const unit = m[2];
+  const range = SINCE_RANGES[unit];
+  if (n < range.min || n > range.max) {
+    throw new Error(`--since '${value}' out of range (minutes 1-9999, hours 1-9999, days 1-365)`);
+  }
+  const multiplier = unit === "m" ? 60_000 : unit === "h" ? 3_600_000 : 86_400_000;
+  return n * multiplier;
+}
+
+export function filterHistory(records, { kind, last, since } = {}) {
+  let out = records;
+  if (kind != null) out = out.filter((r) => r.kind === kind);
+  if (since != null) {
+    const cutoffMs = parseSince(since);
+    const threshold = Date.now() - cutoffMs;
+    out = out.filter((r) => (r.recordedAt ?? 0) >= threshold);
+  }
+  if (last != null && last > 0) out = out.slice(-last);
+  return out;
+}
+
+const PERCENTILE_CUTOFFS = { p50: 1, p95: 20, p99: 100 };
+const METRICS = ["firstEventMs", "streamMs", "tailMs", "totalMs"];
+
+export function computeAggregateStats(records) {
+  // Drop records with invariantOk=false or bgWaitEntered=true (tail pollution)
+  const excludedInvariant = records.filter((r) => r.timing?.invariantOk === false).length;
+  const excludedBgWait = records.filter((r) => r.timing?.bgWaitEntered === true).length;
+  const valid = records.filter(
+    (r) => r.timing?.invariantOk !== false && r.timing?.bgWaitEntered !== true
+  );
+
+  const n = valid.length;
+  const percentiles = {};
+  for (const [p, cutoff] of Object.entries(PERCENTILE_CUTOFFS)) {
+    if (n < cutoff) { percentiles[p] = null; continue; }
+    const row = {};
+    for (const m of METRICS) {
+      row[m] = percentile(valid.map((r) => r.timing?.[m]), Number(p.slice(1)) / 100);
+    }
+    percentiles[p] = row;
+  }
+
+  let slowest = null;
+  for (const r of valid) {
+    const total = r.timing?.totalMs || 0;
+    if (!slowest || total > slowest.totalMs) {
+      slowest = { jobId: r.jobId, totalMs: total };
+    }
+  }
+
+  return {
+    validCount: n,
+    excludedInvariant,
+    excludedBgWait,
+    percentiles,
+    slowest,
+  };
+}

@@ -9,6 +9,9 @@ import {
   TimingAccumulator,
   appendTimingHistory,
   loadTimingHistory,
+  percentile,
+  filterHistory,
+  computeAggregateStats,
 } from "../plugins/kimi/scripts/lib/timing.mjs";
 
 describe("paths.mjs — timing helpers", () => {
@@ -255,5 +258,86 @@ describe("appendTimingHistory + loadTimingHistory", () => {
       // Clean up the manufactured lock
       try { fs.unlinkSync(resolveTimingsLockFile()); } catch {}
     } finally { teardownHome(tmp); }
+  });
+});
+
+describe("percentile / filterHistory / computeAggregateStats", () => {
+  it("percentile: empty input → null", () => {
+    assert.equal(percentile([], 0.5), null);
+  });
+
+  it("percentile: single value p50 returns that value", () => {
+    assert.equal(percentile([100], 0.5), 100);
+  });
+
+  it("percentile: strict math — 100 records [1..100], p50≈50, p95≈95, p99≈99 (S2)", () => {
+    const xs = Array.from({ length: 100 }, (_, i) => i + 1);
+    assert.equal(percentile(xs, 0.5), 50, "p50 of 1..100 must equal 50");
+    assert.equal(percentile(xs, 0.95), 95, "p95 of 1..100 must equal 95");
+    assert.equal(percentile(xs, 0.99), 99, "p99 of 1..100 must equal 99");
+  });
+
+  it("percentile: ignores null/NaN/Infinity — filters before sorting (S2)", () => {
+    const xs = [1, null, 2, NaN, 3, Infinity, 4, undefined];
+    assert.equal(percentile(xs, 0.5), 2, "p50 of [1,2,3,4] after filtering must equal 2");
+  });
+
+  it("computeAggregateStats: p50 needs ≥1, p95 needs ≥20, p99 needs ≥100", () => {
+    const mk = (n) => Array.from({length: n}, (_, i) => ({
+      timing: { firstEventMs: 100, streamMs: i*10, tailMs: 50, totalMs: 100 + i*10 + 50 }
+    }));
+    const s1 = computeAggregateStats(mk(1));
+    assert.ok(s1.percentiles.p50);
+    assert.equal(s1.percentiles.p95, null);
+    assert.equal(s1.percentiles.p99, null);
+
+    const s20 = computeAggregateStats(mk(20));
+    assert.ok(s20.percentiles.p50);
+    assert.ok(s20.percentiles.p95);
+    assert.equal(s20.percentiles.p99, null);
+
+    const s100 = computeAggregateStats(mk(100));
+    assert.ok(s100.percentiles.p99);
+  });
+
+  it("filterHistory({kind}) does pure string equality only", () => {
+    const records = [
+      { jobId: "a", kind: "ask", recordedAt: 1000 },
+      { jobId: "b", kind: "review", recordedAt: 2000 },
+      { jobId: "c", kind: "ask", recordedAt: 3000 },
+    ];
+    assert.equal(filterHistory(records, { kind: "ask" }).length, 2);
+    assert.equal(filterHistory(records, { kind: "review" }).length, 1);
+    assert.equal(filterHistory(records, { kind: "ASK" }).length, 0);   // case-sensitive
+    assert.equal(filterHistory(records, { kind: "" }).length, 0);       // empty means "no match"
+  });
+
+  it("filterHistory({since}) uses recordedAt — '1h' keeps last hour", () => {
+    const now = Date.now();
+    const records = [
+      { jobId: "old", recordedAt: now - 2 * 3600_000 },
+      { jobId: "recent", recordedAt: now - 30 * 60_000 },
+    ];
+    const r = filterHistory(records, { since: "1h" });
+    assert.equal(r.length, 1);
+    assert.equal(r[0].jobId, "recent");
+  });
+
+  it("filterHistory({since}) validates range — 0m rejected, 9999d rejected", () => {
+    assert.throws(() => filterHistory([], { since: "0m" }), /out of range/);
+    assert.throws(() => filterHistory([], { since: "9999d" }), /out of range/);
+    assert.throws(() => filterHistory([], { since: "not-a-duration" }), /invalid/);
+    assert.doesNotThrow(() => filterHistory([], { since: "1m" }));
+    assert.doesNotThrow(() => filterHistory([], { since: "365d" }));
+  });
+
+  it("computeAggregateStats excludes bgWaitEntered=true from percentiles", () => {
+    const records = [
+      { jobId: "a", timing: { firstEventMs: 100, streamMs: 200, tailMs: 50, totalMs: 350, bgWaitEntered: false, invariantOk: true } },
+      { jobId: "b", timing: { firstEventMs: 100, streamMs: 200, tailMs: 9999, totalMs: 10299, bgWaitEntered: true, invariantOk: true } },
+    ];
+    const s = computeAggregateStats(records);
+    assert.equal(s.excludedBgWait, 1);
+    assert.equal(s.validCount, 1);
   });
 });
