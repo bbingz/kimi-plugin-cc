@@ -30,6 +30,7 @@ import {
   cancelJob,
   resolveResumeCandidate,
   readStoredJobResult,
+  getJobKindLabel,
   SESSION_ID_ENV,
 } from "./lib/job-control.mjs";
 import { upsertJob, getConfig, setConfig, filterExpired } from "./lib/state.mjs";
@@ -774,10 +775,25 @@ function runJobStatus(rawArgs) {
     // Physical purge happens lazily inside updateState; this is the UX filter.
     const visible = single ? filterExpired([single]) : [];
     if (visible.length === 0) {
-      process.stdout.write(JSON.stringify({ ok: false, error: `Job ${jobId} not found` }, null, 2) + "\n");
+      if (options.json) {
+        process.stdout.write(JSON.stringify({ ok: false, error: `Job ${jobId} not found` }, null, 2) + "\n");
+      } else {
+        process.stderr.write(`Job ${jobId} not found\n`);
+      }
       process.exit(1);
     }
-    process.stdout.write(JSON.stringify(visible[0], null, 2) + "\n");
+    const job = visible[0];
+    if (options.json) {
+      process.stdout.write(JSON.stringify(job, null, 2) + "\n");
+    } else {
+      // T11: text-mode status with timing hint for completed jobs
+      const kindLabel = getJobKindLabel(job);
+      const status = job.status === "running" ? "running" : `${job.status} (exit ${job.exitCode ?? "?"})`;
+      process.stdout.write(`Job ${job.id} (${kindLabel}) ${status}, ${job.elapsed}\n`);
+      if (job.status === "completed") {
+        process.stdout.write(`  → /kimi:timing --last   for timing breakdown\n`);
+      }
+    }
     process.exit(0);
   }
 
@@ -789,7 +805,35 @@ function runJobStatus(rawArgs) {
     running: filterExpired(snapshot.running),
     recent: filterExpired(snapshot.recent),
   };
-  process.stdout.write(JSON.stringify(filtered, null, 2) + "\n");
+  if (options.json) {
+    process.stdout.write(JSON.stringify(filtered, null, 2) + "\n");
+  } else {
+    // T11: text-mode status with timing hints for completed jobs
+    const lines = [];
+    if (filtered.running.length > 0) {
+      lines.push("Running:");
+      for (const job of filtered.running) {
+        const kindLabel = getJobKindLabel(job);
+        lines.push(`  ${job.id} (${kindLabel}) running, ${job.elapsed}`);
+      }
+    }
+    if (filtered.recent.length > 0) {
+      if (lines.length > 0) lines.push("");
+      lines.push("Recent:");
+      for (const job of filtered.recent) {
+        const kindLabel = getJobKindLabel(job);
+        const status = `${job.status} (exit ${job.exitCode ?? "?"})`;
+        lines.push(`  ${job.id} (${kindLabel}) ${status}, ${job.elapsed}`);
+        if (job.status === "completed") {
+          lines.push(`    → /kimi:timing --last   for timing breakdown`);
+        }
+      }
+    }
+    if (lines.length === 0) {
+      lines.push("No jobs");
+    }
+    process.stdout.write(lines.join("\n") + "\n");
+  }
   process.exit(0);
 }
 

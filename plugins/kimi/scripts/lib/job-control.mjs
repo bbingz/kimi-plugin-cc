@@ -203,6 +203,9 @@ export function runWorker(jobId, workspaceRoot, companionScript, args) {
   }
 
   console.log(`\n[${now}] Job ${jobId} ${status} (exit ${exitCode})`);
+  if (status === "completed") {
+    console.log(`  → /kimi:timing --last   for timing breakdown`);
+  }
 }
 
 /**
