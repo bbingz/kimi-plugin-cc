@@ -38,6 +38,7 @@ import { binaryAvailable } from "./lib/process.mjs";
 import { ensureGitRepository, collectReviewContext, isEmptyContext } from "./lib/git.mjs";
 import { errorResult } from "./lib/errors.mjs";
 import { resolveRealCwd } from "./lib/paths.mjs";
+import { resolveContinueTarget, validateResumeTarget, mapSessionReason } from "./lib/sessions.mjs";
 import {
   appendTimingHistory,
   TimingAccumulator,
@@ -132,8 +133,11 @@ const USAGE = `Usage: kimi-companion <subcommand> [options]
 Subcommands:
   setup [--json] [--enable-review-gate|--disable-review-gate]
                                        Check kimi CLI availability, auth, and configured models
-  ask [--json] [--stream] [-m <model>] [-r <sessionId>] "<prompt>"
+  ask [--json] [--stream] [-m <model>] "<prompt>"
                                        Send a one-shot prompt. --stream emits JSONL events as they arrive.
+                                       (v0.2 P2: --resume removed — use 'continue' or 'resume' subcommand.)
+  continue "<prompt>"                  Continue the most recent Kimi session for the current cwd.
+  resume <sessionId> "<prompt>"        Resume a specific Kimi session by UUID in the current cwd.
   review [--base <ref>] [--scope <auto|staged|unstaged|working-tree|branch>] [-m <model>] [focus...]
                                        Review current diff. Always emits JSON matching review-output schema.
   adversarial-review [--base <ref>] [--scope <auto|staged|unstaged|working-tree|branch>] [-m <model>] [--background|--wait] [focus...]
@@ -247,6 +251,133 @@ function formatSetupText(s) {
     lines.push(`  pipx:        ${s.installers.pipx ? "yes" : "no"}`);
   }
   return lines.join("\n");
+}
+
+async function runContinue(rawArgs) {
+  // No flag parsing — all args are prompt tokens. Reject any `-*` token.
+  for (const a of rawArgs) {
+    if (/^--?[a-zA-Z]/.test(a)) {
+      process.stderr.write(
+        `Error: '${a}' — /kimi:continue does not accept flags. Usage: /kimi:continue <prompt>\n`
+      );
+      process.exit(KIMI_EXIT.USAGE_ERROR);
+    }
+  }
+
+  const prompt = rawArgs.join(" ").trim();
+  if (!prompt) {
+    process.stderr.write("Error: /kimi:continue requires a <prompt>.\n");
+    process.exit(KIMI_EXIT.USAGE_ERROR);
+  }
+
+  const realCwd = resolveRealCwd(process.cwd());
+
+  // Step 1: resolve last session id for this cwd from kimi.json.
+  const r1 = resolveContinueTarget(realCwd);
+  if (!r1.ok) {
+    const er = mapSessionReason(r1.reason, { realCwd, ...(r1.detail || {}) }, { commandOrigin: "continue" });
+    process.stderr.write(er.error + "\n");
+    process.exit(er.status);
+  }
+
+  // Step 2: validate the target session dir is populated (pre-call ghost guard).
+  const r2 = validateResumeTarget(realCwd, r1.sessionId);
+  if (!r2.ok) {
+    const er = mapSessionReason(r2.reason, { realCwd, sessionId: r1.sessionId, ...(r2.detail || {}) }, { commandOrigin: "continue" });
+    process.stderr.write(er.error + "\n");
+    process.exit(er.status);
+  }
+
+  const callArgs = { prompt, model: null, resumeSessionId: r1.sessionId, cwd: realCwd };
+  const result = callKimi(callArgs);
+  hookTimingForResult(result, {
+    jobId: `continue-${Date.now()}-${process.pid}`,
+    kind: "continue",
+    prompt: callArgs.prompt,
+    requestedModel: callArgs.model ?? null,
+  });
+
+  if (!result.ok) {
+    process.stderr.write(`Error: ${result.error}\n`);
+    if (result.partialResponse) process.stderr.write(`Partial response:\n${result.partialResponse}\n`);
+    process.exit(result.status ?? 1);
+  }
+  process.stdout.write(result.response + "\n");
+  process.stdout.write(formatAskFooter(result, callArgs.model) + "\n");
+  if (!result.sessionId) {
+    process.stderr.write(
+      "Warning: session_id could not be captured. /kimi:continue next time may fall back to a fresh session.\n"
+    );
+  }
+  let resumeMismatched = false;
+  if (callArgs.resumeSessionId && result.ok && result.sessionId &&
+      result.sessionId !== callArgs.resumeSessionId) {
+    process.stderr.write(
+      `Warning: requested --resume ${callArgs.resumeSessionId} did not match returned session ${result.sessionId}; kimi likely started a fresh session and prior context was not carried over.\n`
+    );
+    resumeMismatched = true;
+  }
+  process.exit(resumeMismatched ? 1 : KIMI_EXIT.OK);
+}
+
+async function runResume(rawArgs) {
+  for (const a of rawArgs) {
+    if (/^--?[a-zA-Z]/.test(a)) {
+      process.stderr.write(
+        `Error: '${a}' — /kimi:resume does not accept flags. Usage: /kimi:resume <sessionId> <prompt>\n`
+      );
+      process.exit(KIMI_EXIT.USAGE_ERROR);
+    }
+  }
+
+  const [sessionId, ...rest] = rawArgs;
+  if (!sessionId) {
+    process.stderr.write("Error: /kimi:resume requires <sessionId> <prompt>.\n");
+    process.exit(KIMI_EXIT.USAGE_ERROR);
+  }
+  const prompt = rest.join(" ").trim();
+  if (!prompt) {
+    process.stderr.write("Error: /kimi:resume requires a <prompt> after the sessionId.\n");
+    process.exit(KIMI_EXIT.USAGE_ERROR);
+  }
+
+  const realCwd = resolveRealCwd(process.cwd());
+
+  const r = validateResumeTarget(realCwd, sessionId);
+  if (!r.ok) {
+    const er = mapSessionReason(r.reason, { realCwd, sessionId, ...(r.detail || {}) }, { commandOrigin: "resume" });
+    process.stderr.write(er.error + "\n");
+    process.exit(er.status);
+  }
+
+  const callArgs = { prompt, model: null, resumeSessionId: sessionId, cwd: realCwd };
+  const result = callKimi(callArgs);
+  hookTimingForResult(result, {
+    jobId: `resume-${Date.now()}-${process.pid}`,
+    kind: "resume",
+    prompt: callArgs.prompt,
+    requestedModel: callArgs.model ?? null,
+  });
+
+  if (!result.ok) {
+    process.stderr.write(`Error: ${result.error}\n`);
+    if (result.partialResponse) process.stderr.write(`Partial response:\n${result.partialResponse}\n`);
+    process.exit(result.status ?? 1);
+  }
+  process.stdout.write(result.response + "\n");
+  process.stdout.write(formatAskFooter(result, callArgs.model) + "\n");
+  if (!result.sessionId) {
+    process.stderr.write("Warning: session_id could not be captured.\n");
+  }
+  let resumeMismatched = false;
+  if (callArgs.resumeSessionId && result.ok && result.sessionId &&
+      result.sessionId !== callArgs.resumeSessionId) {
+    process.stderr.write(
+      `Warning: requested --resume ${callArgs.resumeSessionId} did not match returned session ${result.sessionId}; kimi likely started a fresh session and prior context was not carried over.\n`
+    );
+    resumeMismatched = true;
+  }
+  process.exit(resumeMismatched ? 1 : KIMI_EXIT.OK);
 }
 
 async function runAsk(rawArgs) {
@@ -1148,6 +1279,10 @@ async function main() {
       return runSetup(rest);
     case "ask":
       return runAsk(rest);
+    case "continue":
+      return runContinue(rest);
+    case "resume":
+      return runResume(rest);
     case "review":
       return runReview(rest);
     case "adversarial-review":
