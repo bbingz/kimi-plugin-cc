@@ -2,6 +2,32 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-22 [Claude Opus 4.7 — v0.2 P3 polish-batch implementation plan (v2 post-3-way-review)]
+
+- **status**: done (plan only; execution next via `superpowers:subagent-driven-development`)
+- **scope**: docs/superpowers/plans/2026-04-22-v0.2-p3-polish-plan.md (NEW, 2176L), CHANGELOG.md
+- **spec**: `docs/superpowers/specs/2026-04-22-v0.2-p3-polish-design.md` (committed as `a2954d8`)
+- **summary**: produced 11-task / 92-step implementation plan for P3 polish batch. Each task is one commit with pre-change baseline grep → literal code change → post-change verification → commit. Ran **3-way review** (codex + gemini + Claude-self with live probes) on plan v1 → returned 3 CRITICAL + 2 HIGH + 2 MEDIUM + 1 LOW. All findings integrated into v2.
+- **3-way review CRITICAL findings (all v2-fixed)**:
+  - **Functions can't cross JSON serialization** (codex): `_stream-worker` background spawn writes config to file via `JSON.stringify`; v1 passed `runLLM: callKimiStreaming` at task-spawn site — function would vanish. V2 moves injection into `dispatchStreamWorker` post-JSON-parse (kimi-companion.mjs:843).
+  - **`errorResult` already exists in kimi.mjs:415** (codex): v1 would create duplicate identifier + circular dep (job-control.mjs imports kimi.mjs). V2 creates neutral `lib/errors.mjs`; kimi.mjs's existing local helper renamed to `streamErrorResult` (reflects its actual stream-specific purpose: returns `partialResponse` + `events`).
+  - **`completedAt` not on state.jobs entries** (codex): `writeJobFile` has it (per-job file) but terminal-status state.jobs writes at `job-control.mjs:188-196, :261-271` do NOT. V1's TTL filter would be no-op. V2 Task 7 adds `completedAt: now` to both state.jobs terminal writes.
+  - **loadState filter + unlocked hook RMW** (gemini): if loadState filters the view, `session-lifecycle-hook.mjs:73-86`'s unlocked `loadState → saveState` writes filtered view to disk, durably purging outside any lock — exact race v1 claimed to avoid. V2 removes filter from loadState; filter applied in companion's `runJobStatus` render path only; physical purge inside `updateState`'s lock.
+- **3-way review HIGH/MEDIUM/LOW integrations**:
+  - Task 1 scope expanded to cover 2 review-fallback synthesis sites (`kimi-companion.mjs:439, :553`) + `review.mjs` `reviewError` composition (codex HIGH 1)
+  - §7 Execution handoff now includes per-task implementer-split table (3 codex / 8 Claude-self after post-review re-classification — several "mechanical" tasks became design-touching) (gemini HIGH)
+  - New §12 Rollback procedure: `git reset --hard a2954d8` + tag delete + orphan `.config.json` sweep (gemini MEDIUM)
+  - Task 11 Step 4 pre-deletes tag for idempotent re-runs (gemini LOW)
+- **Plan-vs-spec supersessions** (recorded in §I.2 S-rows at Task 10 for future-fork audit trail):
+  - S1: errorResult location changed from `job-control.mjs` (spec) to `lib/errors.mjs` (plan)
+  - S2: C4 injection point changed from task-spawn config (spec) to `dispatchStreamWorker` (plan)
+  - S3: C6 filter placement changed from `loadState` (spec) to `runJobStatus` render + `updateState` purge (plan)
+- **These supersessions are improvements on spec, not violations** — spec's intent (canonical shape / LLM seam / TTL semantics) preserved; only implementation location changes. Siblings forking at spec-level will re-derive the same corrections if they skip these plan notes.
+- **Verification in plan**: §3 has 8 per-item verification commands; Task 11 Step 1 aggregates them into a single sweep. Each task ends with syntax check + runtime `import()` + spec-§3 checks. No `tests/` directory (lands in P1).
+- **Structure**: 11 tasks preserved from writing-plans output; 92 checkbox steps (up from 91 in v1). Task 1 went from 11 steps to 13 steps (added errors.mjs creation + kimi.mjs rename), Task 4 re-written keeping 11 steps, Task 7 went from 11 to 14 (added completedAt persist + split-filter verification + anti-regression check).
+- **Self-review v2**: spec coverage ✓, 3-way findings all referenced 19× throughout, no code-gap placeholders (remaining ellipsis uses are intentional "preserve existing body" instructions), type/name consistency across tasks, ordering dependencies satisfied, zsh-safe quoting, rollback procedure explicit.
+- **next**: invoke `superpowers:subagent-driven-development` to execute 11 tasks; mechanical ones (T3 paths.mjs, T8 migration note, T9 templates) → codex subagent; design-touching ones (T1, T2, T4, T5, T6, T7, T10, T11) → Claude-self or fresh Claude subagent. Final integration at Task 11 + tag `v0.2-p3-polish`. User approves or requests changes after each task; do NOT auto-merge without user confirmation.
+
 ## 2026-04-22 [Claude Opus 4.7 — v0.2 P3 polish-batch design spec (v2 post-6-way-review)]
 
 - **status**: done (spec only; implementation plan next via `superpowers:writing-plans`)
