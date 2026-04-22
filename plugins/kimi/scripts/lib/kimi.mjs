@@ -95,6 +95,36 @@ export const KIMI_EXIT = {
 // sweep when upgrading kimi-cli major versions.
 export const KIMI_STATUS_TIMED_OUT = 124;
 
+// ── Defensive large-prompt cap (C3 — P3 polish batch) ─────
+//
+// kimi-CLI's handling of multi-MB stdin is untested empirically
+// (Phase-0 probes went to 150 KB max). This is a DEFENSIVE CAP, not a
+// kernel-boundary enforcement — stdin has no ARG_MAX limit (E2BIG
+// applies to argv/env only). Until a probe establishes kimi's real
+// ceiling, a predictable failure message beats opaque pipe hangs.
+//
+// 1_000_000 chars ≈ 1 MB ASCII; CJK content compresses worse in UTF-8
+// but we measure in chars, so the cap behaves consistently regardless
+// of script.
+export const MAX_PROMPT_CHARS = 1_000_000;
+
+// Returns canonical errorResult on oversize; null if OK to proceed.
+// Caller passes { kind, label } — kind for the error envelope shape
+// (C2), label for the human-readable "multiple X calls" message.
+export function checkPromptSize(prompt, { kind, label }) {
+  const chars = prompt.length;
+  if (chars > MAX_PROMPT_CHARS) {
+    return errorResult({
+      kind,
+      error: `prompt exceeds ${MAX_PROMPT_CHARS} chars (got ${chars}); trim context or split into multiple ${label} calls`,
+      status: null,
+      stdout: "",
+      detail: `prompt-too-large: ${chars} chars > ${MAX_PROMPT_CHARS} char cap`,
+    });
+  }
+  return null;
+}
+
 // ── TOML top-level key scanner (spec §3.6) ─────────────────
 
 export function readTomlTopLevelKey(text, key) {
@@ -440,6 +470,9 @@ export function callKimi({
   extraArgs = [],
   resumeSessionId = null,
 }) {
+  const guardResult = checkPromptSize(prompt, { kind: "ask", label: "ask" });
+  if (guardResult) return guardResult;
+
   // ── Pre-flight (codex C2) ──
   // Validate requested model against ~/.kimi/config.toml [models.*] BEFORE
   // spawning kimi. Avoids the "LLM not set" exit-1 path (which creates a
@@ -548,6 +581,9 @@ export function callKimiStreaming({
   resumeSessionId = null,
   onEvent = () => {},
 }) {
+  const guardResult = checkPromptSize(prompt, { kind: "task", label: "task" });
+  if (guardResult) return Promise.resolve(guardResult);
+
   // Pre-flight model check, same as callKimi (codex C2).
   if (model) {
     const configured = readKimiConfiguredModels();

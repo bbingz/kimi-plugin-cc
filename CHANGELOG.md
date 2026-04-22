@@ -2,6 +2,15 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-22 [Claude Opus 4.7 — v0.2 P3 Task 6 (C3): defensive MAX_PROMPT_CHARS cap in kimi.mjs]
+
+- **status**: done (Task 6 of 11 in v0.2 P3 polish batch, executed in worktree `feat/v0.2-p3-polish`)
+- **scope**: `plugins/kimi/scripts/lib/kimi.mjs`, `CHANGELOG.md`
+- **summary**: added `MAX_PROMPT_CHARS = 1_000_000` defensive cap + `checkPromptSize(prompt, {kind, label})` helper that returns canonical `errorResult` on oversize / `null` to proceed. Guard invoked at the top of `callKimi` (kind:`ask`) and `callKimiStreaming` (kind:`task`). Error envelope: `error` field carries user-actionable remediation ("trim context or split into multiple <label> calls"); `detail` carries the structured diagnostic string (`prompt-too-large: <got> chars > <cap> char cap`). Rationale: kimi-CLI's stdin ceiling is unprobed (Phase-0 went to 150 KB max); explicit failure beats opaque pipe hang. Cap value revisitable in v0.2+ once a probe establishes kimi's real limit — tracked in lessons.md §I.2.
+- **plan deviation (streaming Promise contract)**: plan Step 5 snippet said `return guardResult;` literally, but `callKimiStreaming` returns a Promise (existing pre-flight at line 555 wraps via `Promise.resolve(streamErrorResult(...))`). Matched that contract: `return Promise.resolve(guardResult);` so awaiting callers don't break. Verified `p instanceof Promise === true`, `(await p).kind === 'task'`.
+- **verifications**: `node --check` clean · oversize callKimi → `ok:false, kind:ask, error='prompt exceeds 1000000 chars (got 1100000); trim context or…', detail='prompt-too-large: 1100000 chars > 1000000 char cap'` · `checkPromptSize('hello', {kind:'ask', label:'ask'}) === null` · oversize callKimiStreaming → Promise resolving to `{ok:false, kind:'task', error:'prompt exceeds…'}` (confirms Promise.resolve wrap is correct).
+- **next**: remaining P3 tasks per plan (7/9/10/11).
+
 ## 2026-04-22 [Claude Opus 4.7 — v0.2 P3 Task 5 (C8): maxDiffChars parameterization in runReviewPipeline]
 
 - **status**: done (Task 5 of 11 in v0.2 P3 polish batch, executed in worktree `feat/v0.2-p3-polish`)
