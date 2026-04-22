@@ -1,6 +1,6 @@
 ---
 description: Delegate a task or ask a question to Kimi
-argument-hint: '[--model <model>] [--resume <sessionId>] <prompt>'
+argument-hint: '[--model <model>] <prompt>'
 allowed-tools: Bash(node:*)
 ---
 
@@ -32,5 +32,12 @@ The companion runs in text mode and produces:
 ### Options
 
 - `--model <name>` — pick a specific model from `configured_models` (see `/kimi:setup`)
-- `--resume <sessionId>` — continue a previous Kimi session by its UUID
 - `--stream` (advanced) — not used from the Claude Code command; developer-only when invoking the companion directly
+
+### Resuming a previous session
+
+`/kimi:ask` always starts a new conversation. To resume:
+- `/kimi:continue <prompt>` — most recent session for the current cwd
+- `/kimi:resume <sessionId> <prompt>` — specific session by UUID
+
+(v0.2 P2 BREAKING: `/kimi:ask --resume <sessionId>` was removed. Use the new commands above.)

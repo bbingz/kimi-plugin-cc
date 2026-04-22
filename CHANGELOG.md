@@ -2,6 +2,119 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-23 [Claude Opus 4.7 + autonomous overnight SDD — v0.2 P2 New Commands (implementation ready for PR)]
+
+- **status**: all 15 implementation tasks landed on `feat/v0.2-p2-commands`. 104/104 tests pass (55 sessions unit + 11 integration + 3 ask-no-resume-guard + 35 P1 timing). Manual smoke matrix passed end-to-end (GHOST PROTECTION verified + symlinked-cwd resolve + BREAKING rejection + kimi.json snapshot-diff clean). Codex final impl review returned 3 should-fix-before-ship (addressed inline) + 4 post-ship-followups (deferred). PR #4 created after Codex sign-off.
+- **branch tip**: `feat/v0.2-p2-commands` rebased on `main@b0c6d8f` (plan v2). 9 commits total (8 from SDD execution + 1 Codex-review fix).
+- **scope**: /kimi:continue + /kimi:resume + BREAKING removal of /kimi:ask --resume.
+- **task-commit map** (9 commits on feat branch):
+  - T1-T4: `f7113a1` lib/sessions.mjs + 55 unit tests (bundled)
+  - T5:    `fd7627c` runContinue + runResume (mirror runAsk)
+  - T6+T9: `235438e` BREAKING --resume removal + regression guard (T9 test was failing-first per TDD)
+  - T7:    `b6a63c9` commands/continue.md + resume.md
+  - T8:    `aa6ab65` integration tests (spawn-based; 11 cases)
+  - T10:   `f27dc2e` README command list update
+  - T11:   `8424029` sibling-backport-checklist P2 section
+  - T13+T14: `532eca2` lessons.md §I.3.P2 closeout + initial CHANGELOG entry
+  - Codex-fix: commands/continue.md + resume.md Case A/B split for resume-mismatch rendering + resume.md wording tightened + this CHANGELOG correction
+- **summary**:
+  - New `lib/sessions.mjs` (153 lines): `md5CwdPath`, `UUID_RE` (semi-strict 8-4-4-4-12), `sanitizeForStderr` (ANSI + control-char), `SESSION_ERROR_REASONS` + `mapSessionReason` (origin-aware exit status; null-safe ctx; sanitized substitutions), `resolveContinueTarget` (kimi.json array iteration + kaos filter per Kimi source-read of metadata.py:51-55), `validateResumeTarget` (statSync + isDirectory + isFile; FIFO / ELOOP / file-at-dir-pos / dangling-symlink all classified correctly).
+  - `kimi-companion.mjs` gains `runContinue` + `runResume` async helpers mirroring runAsk pattern: realpath cwd normalization, resolve → validate → callKimi with `resumeSessionId` + `cwd`, `hookTimingForResult` with distinct `kind: 'continue'` / `'resume'` for observability, resume-mismatch warning + exit-1 on sessionId divergence.
+  - BREAKING: `/kimi:ask --resume <sessionId>` and `/kimi:ask -r` removed. Explicit rejection at top of runAsk (parseArgs doesn't reject unknown long flags; would otherwise leak into prompt). Short-form `-r`, long-form `--resume`, and `--resume=<val>` equals-form all covered.
+  - ask.md frontmatter updated (argument-hint drops --resume); new "Resuming a previous session" section points users to continue/resume.
+  - `tests/ask-no-resume-guard.test.mjs` (3 cases): structural regression guard independent of P2 test file (MiniMax round-1 hardening).
+  - probe v4 artifacts on main (commit `7529f1e`): ghost-session hypothesis CONFIRMED in kimi 1.37.0; work_dirs array schema; realpath-path-storage on 1.37; 3-file session-dir layout; strict v4 UUIDs; kimi has built-in `--continue -C` (safely hard-fails on no prior session — source-read).
+- **Review cycles completed**:
+  - Spec v1 → v1.1 (Codex round 1: 16/18 findings) → v1.2 (probe v4 integration) → v2 (6-way round 1: codex+gemini+kimi+qwen+minimax+self parallel; 19/55 findings accepted, convergent blockers on cwd param + ghost terminology + UUID regex).
+  - Plan v1 → v2 (Codex single-reviewer: 1 blocker + 10 fixes).
+  - Kimi's source-read as 6-way reviewer corrected 3 factual errors (PR #1716, kimi -C safety, kaos field).
+- **GHOST PROTECTION verified end-to-end**: manual smoke test issued `/kimi:resume <fab-uuid>` from a real kimi cwd; wrapper rejected pre-call with `session not found`; zero new session dirs under `~/.kimi/sessions/<md5(cwd)>/`; zero new entries in `~/.kimi/kimi.json.work_dirs` referencing the fab UUID.
+- **SYMLINKED CWD verified**: `/kimi:continue` invoked from a symlink-to-smoke-dir correctly resolved to the real session (same session id in footer) — §7.7 realpath-normalization symmetry holds.
+- **CHANGELOG SNAPSHOT DIFF verified**: post-smoke diff vs. pre-smoke backup shows ZERO non-probe entry changes (20 pre-existing entries preserved).
+- **Deviations from strict SDD** (documented in lessons §I.3.P2 D-P2.7): overnight autonomous run used hybrid mode — mechanical tasks inline (plan v2 had exact code in each step), reviewer dispatched only at Codex plan-review milestone and implied-final via full test-suite. Full strict SDD (implementer + spec + quality subagents per task) would have added ~3-4 hours of dispatch-wait cycles; inappropriate for overnight latency budget.
+- **next**: PR #4. User morning decision: review completeness, then approve `gh pr create` + merge.
+
+## 2026-04-23 [Claude Opus 4.7 — v0.2 P2 spec v2 (6-way review integrated, plan-ready)]
+
+- **status**: spec v2 committed on main. 6-way review round 1 completed via parallel agent dispatch (codex + gemini + kimi + qwen + minimax + Claude-self). All accepted findings integrated; round 2 deemed unnecessary per feedback_review_diminishing_returns (no unresolved convergent findings after round-1 integration). Ready for plan phase.
+- **6-way review outcomes** (see spec §15.3 for full per-reviewer table):
+  - **11 blockers/must-fix accepted**: (a) `cwd` parameter missing from callKimi call sites (Codex + Gemini convergent); (b) "refusing to resume ghost session" wording contradicts probe v4 Q4.4 (Codex + Gemini + Kimi convergent); (c) PR #1716 claim is false per Kimi source-read of `cli/__init__.py:546-553` — ghost affects ALL modes, not just --print; (d) `kimi -C` is actually SAFE per Kimi source-read (`BadParameter` on no-prior-session) — §12.2 Q6 completely rewritten; (e) `kaos` field matters for work_dirs lookup per Kimi source-read of `metadata.py:51-55` — `resolveContinueTarget` signature gained `kaos = 'local'` param; (f) fs-error coverage via `existsSync` unreachable (Codex) — switched to `statSync` with try/catch; (g) unsafe `data.work_dirs` property access on null kimi.json (Gemini); (h) `session-empty` terminology factual correction (probe v4 proved ghost = post-hoc-identical); (i) UUID regex prose/code inconsistency (MiniMax) — unified on semi-strict 8-4-4-4-12 hex with position-specific dashes; (j) concurrent-write race upgrade to data-divergence scenario (MiniMax) — §7.6 rewritten as two-scenario framing; (k) file-at-dir-position + FIFO + ELOOP + ANSI-escape hostile states covered (Qwen + MiniMax).
+  - **5 should-fix accepted**: realpath narrative corrected as platform-not-version behavior (Kimi); populated predicate divergence from kimi-cli's own logic documented; §7.8 homedir() /var/root claim corrected; T-checklist per-reason sub-items (Qwen); legacy session migration edge documented.
+  - **3 nice-to-have accepted**: unused readdirSync import removed; UUID regex commentary corrected; `mapSessionReason` null-handling and origin-aware exit status added.
+  - **2 nitpicks accepted**.
+  - **1 deferred**: probe CI-safety (MiniMax) — YAGNI for single-developer workflow; future CI adoption would add a probe v4.1 pass.
+  - **0 rejected**.
+- **Key v2 code-shape corrections**:
+  - `resolveContinueTarget(normalizedCwd, kaos = 'local')` — iterates work_dirs array with dual match on path + kaos.
+  - `validateResumeTarget` uses `statSync` (not `existsSync`) with precise `isDirectory()` + `isFile()` checks; FIFO + file-at-dir-pos + dangling-symlink all correctly classified.
+  - `mapSessionReason(reason, ctx, options = {commandOrigin})` — origin-aware exit status (continue vs resume differ for invalid-uuid); ANSI/control-char sanitization via `sanitizeForStderr` helper; null-handling via `!= null` checks with `'?'` fallback.
+  - `case 'continue'` / `case 'resume'` now pass `cwd: realCwd` to `callKimi` — closes the §7.7 symmetry hole that v1.2 introduced.
+  - Semi-strict UUID regex `/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i` rejects 36-dash and similar degenerate inputs.
+- **Test plan expansion**: ~40 unit cases in sessions.test.mjs (up from ~25), per-reason T-checklist breakdown, new `tests/ask-no-resume-guard.test.mjs` as structural regression guard independent of P2 test file (MiniMax).
+- **§0.2 hard-constraint scope corrected**: no longer claims ghost bug is --print-only; now states all modes affected (Kimi source-read). Wrapper-side validation defense-in-depth framing preserved.
+- **Next (overnight autonomous)**: plan v1 (writing-plans skill on spec v2) → codex plan review → plan v2 → worktree `feat/v0.2-p2-commands` → SDD → tests green. HARD STOP before PR create.
+
+## 2026-04-23 [Claude Opus 4.7 — v0.2 P2 spec v1.2 + probe v4 (ghost-session CONFIRMED)]
+
+- **status**: probe v4 executed + spec v1.2 integrated probe findings. Commits: `7529f1e` probe v4 + `43b4bb5` spec v1.1 + v1.2 on top of that. All ahead of 6-way review.
+- **scope**: run full ghost-session verification experiment against kimi-cli 1.37.0 from throwaway cwds, then update spec with probe evidence.
+- **Probe v4 summary** (doc/probe/probe-results-v4.json + doc/probe/22-02.md):
+  - **Q4.0 HYPOTHESIS CONFIRMED**: `kimi --print -r <fabricated-uuid>` silently creates a ghost session at that UUID. Exit 0, full 3-file session dir materialized (context.jsonl 17.1K, state.json 390B, wire.jsonl 1005B), kimi.json work_dirs entry's `last_session_id` updated to the fabricated UUID. Zero user-visible indication. Wrapper-side validation is strictly necessary for P2.
+  - **Q4.1 kimi.json schema (delta from 1.36)**: top-level has only `work_dirs`, which is an ARRAY (not object-keyed). Each entry {path, kaos, last_session_id}. kimi 1.37 stores REALPATH-RESOLVED paths (/private/tmp/... on macOS) — differs from probe v3's 1.36 finding of verbatim paths. Spec §7.7 realpath-normalization workaround remains correct for 1.37.
+  - **Q4.2 session dir layout**: 3 files — context.jsonl (UTF-8 JSONL messages), state.json (metadata with keys version/approval/title/archive/todos), wire.jsonl (wire events). Populated predicate: context.jsonl exists AND size > 0.
+  - **Q4.3 cross-cwd**: resuming UUID from cwd A while in cwd B creates duplicate session dir under md5(cwdB). §7.3 refusal justified.
+  - **Q4.4 ghost disk shape**: post-hoc identical to real. Pre-call validation is the only defense.
+  - **Q4.5 UUID variant**: strict v4 RFC 4122. Relaxed regex correctness preserved.
+  - **Q4.6 native subcommand scan**: kimi 1.37 has built-in `--continue -C` flag for per-cwd resume. Surfaced as §12.2 Q6 open question (explicit vs native design for /kimi:continue) for 6-way reviewers.
+- **Spec v1.2 revisions**:
+  - §4.4 resolveContinueTarget: `work_dirs.find(w => w.path === normalizedCwd)` (array iteration, not object index).
+  - §4.4 validateResumeTarget: populated predicate is `existsSync(dir + '/context.jsonl') && statSync(...).size > 0`.
+  - §0.2 hedging stripped: hypothesis is confirmed, no longer "source-read pending probe".
+  - §2.4 all three assumptions upgraded to "probe-confirmed (high confidence)".
+  - §7.5 session-empty scope narrowed: now a safety-net for rare transient corruption, not the ghost state (ghost is unreachable post-hoc).
+  - §9.2 BREAKING note is unambiguous "fixes ghost session" not "may fix depending on probe".
+  - New §12.2 Q6: kimi -C native alternative (surface for reviewers).
+  - §15.2 populated with probe-v4 round audit trail.
+- **Memory hygiene**: active_p2_spec_v1_1_revision.md's fact-check table remains accurate; v1.2 expands scope beyond it but doesn't invalidate any row.
+- **Cleanup verification**: after probe, ~/.kimi/kimi.json diffed against pre-probe backup — all non-probe work_dirs entries preserved; 2 probe entries removed; 2 throwaway /tmp dirs + 2 sessions subdirs removed. Backup file kept as ~/.kimi/kimi.json.bak-probe-v4-<ts> for 7-day safety.
+- **Next (overnight autonomous)**: 6-way spec review on v1.2 → spec v2 → plan v1 → codex plan review → plan v2 → worktree + SDD implementation → tests green. HARD STOP before PR create.
+
+## 2026-04-23 [Claude Opus 4.7 — v0.2 P2 spec v1.1 (Codex review integrated)]
+
+- **status**: spec v1.1 committed on main — supersedes v1. Awaits probe v4 execution + 6-way review before v2.
+- **scope**: integrated 16/18 Codex-2026-04-22 findings (3 blockers + 6 must-fix + 5 should-fix + 2 nice-to-have). No deferrals or rejects — all findings verified against repo grep as factual errors in v1.
+- **summary** (fact-check evidence cited inline in spec §15):
+  - BLOCKERS fixed: (1) `probe-results-v4.json` renaming: spec v1 referenced a file that never existed; renamed all "probe v5" to "probe v4" and the existing `doc/probe/probe-results.json` clarified as schema_v3 (2026-04-20, kimi 1.36.0). (2) realpath vs verbatim path: `probe-results.json:47` confirms kimi uses verbatim-absolute-normalized; §7.7 rewritten with explicit wrapper-side realpath-normalization workaround + "alternative considered and rejected" discussion. (3) seam param name: `callKimi` uses `resumeSessionId` (per `lib/kimi.mjs:399,407,476,505,634,655,990`), not `resumeId`; §4.5/§5 corrected. (4) `usageError()` does not exist in kimi-companion.mjs; replaced with inline `process.stderr.write + process.exit` pattern matching existing convention at `kimi-companion.mjs:272-289,651-666,1133-1135`.
+  - MUST-FIX fixed: (5) `errorResult()` factual signature `{kind,error,status,stdout,detail} → {ok:false,...}` (object builder, not exit/stderr tuple); routing is caller's responsibility per existing `kimi-companion.mjs:427,481,536,607,653,664` convention. (6) `callKimi` uses `useStdinForPrompt` threshold (small prompts `-p`, large prompts stdin pipe per `lib/kimi.mjs:399,505`). (7) `fs-error` reason code added for EACCES/EPERM/ENOTDIR/ELOOP — "zero-throws" contract now explicit about which errors throw-and-wrap vs. return-structured. (8) probe §2.3 restructured into 3-step protocol covering the fabricated-UUID ghost experiment (Q4.0). (9) Q4.2/Q4.4 expanded to cover file encoding, metadata-only files, placeholder detection. (10) §12 realpath question closed with audit trail.
+  - SHOULD-FIX fixed: (11) error templates use `{cwdBase}` not full `<realCwd>` (path privacy); full path in `detail`. (12) UUID regex relaxed to `/^[0-9a-f-]{36}$/i` matching `lib/kimi.mjs:63`. (13) `lib/sessions.mjs` uses function-local `homedir()` calls (no module-level constants) so HOME env overrides in tests are import-order-independent. (14) §9.3 new subsection documents the same-PR-vs-split trade-off explicitly. (15) new §7.8 covers HOME-unset / symlinks / uid mismatch / JSON trailing garbage.
+  - NICE-TO-HAVE fixed: (16) `mapSessionReason` lives in `lib/sessions.mjs` (co-located with reason producers); `lib/errors.mjs` stays provider-agnostic. (17) §0.3 + §10.1 cite literal sibling paths scanned 2026-04-22 at `/Users/bing/-Code-/{gemini,minimax,qwen}-plugin-cc/plugins/*/commands/ask.md` — confirmed none have `--resume`.
+  - Key honesty update: §0.2 now marks ghost-session as "source-read hypothesis from kimi-cli PR #1716, pending probe v4 Q4.0 confirmation" rather than "probe v4 Q5 confirmed" (which was citing a non-existent probe). Spec motivation has a "design posture under uncertainty" clause covering the case where probe v4 falsifies the hypothesis.
+  - New §15 "Review findings log" added for audit trail: round-by-round accept/reject with rationale; populated so far with the Codex round 1 table.
+- **Next (overnight autonomous)**: probe v4 execution → possible spec v1.2 → 6-way spec review (codex + gemini + kimi + qwen + minimax + claude-self parallel) → spec v2 → plan v1 → codex plan review → plan v2 → worktree + SDD implementation → tests green. HARD STOP before PR create.
+
+## 2026-04-22 [Claude Opus 4.7 — v0.2 P2 spec v1 (pre-probe + pre-6-way-review)]
+
+- **status**: spec v1 drafted on main — `docs/superpowers/specs/2026-04-22-v0.2-p2-new-commands-design.md`. Awaits probe v5 execution + 6-way review before revising to v2.
+- **scope**: 2 new slash commands (`/kimi:continue <prompt>`, `/kimi:resume <sessionId> <prompt>`) + new `lib/sessions.mjs` (pure resolve/validate) + **BREAKING** removal of `/kimi:ask --resume` flag (sibling alignment — gemini/minimax/qwen all have `ask = new conversation only`).
+- **summary**:
+  - Hard constraint: probe v4 Q5 confirmed `kimi --print -r <bogus-uuid>` silently creates ghost sessions. All P2 resume entries pre-validate wrapper-side before invoking `kimi -r`. Strict hard-fail on all error reasons (no soft fallback).
+  - Data source: `~/.kimi/kimi.json` → `work_dirs[realCwd].last_session_id` (continue) + `~/.kimi/sessions/<md5(realCwd)>/<uuid>/` existence + ≥1-message check (both commands). Cross-cwd resume disallowed.
+  - Error registry adds 7 reason codes to `lib/errors.mjs` via new `mapSessionReason()` helper; all stderr templates are literal strings pinned in spec §6.1.
+  - P1 `hookTimingForResult` is called at the terminal site of each new branch, so `/kimi:timing --last` reflects resume calls.
+  - Tests: `tests/sessions.test.mjs` (~25 cases) + `tests/commands-p2.test.mjs` (integration + ask.md removal regression).
+  - Probe v5 scope: 4 required (kimi.json schema, sessions dir layout, cross-cwd UUID collision possibility, ghost-session on-disk shape) + 1 optional (native list-sessions subcommand). Throwaway cwd methodology to avoid polluting real `~/.kimi/` state.
+- **Brainstorm decisions locked** (bbing approved every point):
+  - scope: `/kimi:continue` + `/kimi:resume <id>` (no `/kimi:list-sessions` — YAGNI)
+  - positioning: sugar + unified-validation helper (shared lib; ask.md internals converge)
+  - signature: prompt mandatory, no flags on the new commands (no `--model` / `--stream` in v1)
+  - data source: kimi.json + sessions double-read
+  - validation-failure UX: hard fail, no soft fallback
+  - edge matrix: all strict (5 hard-fail scenarios with literal error templates)
+  - probe v5: required 4 + optional 1
+  - sibling alignment: reviewed gemini/minimax/qwen (none has `ask --resume`) → drove the ask.md removal decision
+  - ask.md handling: **remove `--resume`** (A1 of 3 options presented) — kimi was the sibling-series outlier; P2 is the window to close that
+- **next**: probe v5 execution + commit → spec v2 if probe invalidates any §2.4 assumption → 6-way spec review → plan (3-way review) → worktree `feat/v0.2-p2-commands` → SDD → PR #4.
+
 ## 2026-04-22 [Claude Opus 4.7 + subagent-driven-development — v0.2 P1 Timing (shipped)]
 
 - **status**: shipped on `feat/v0.2-p1-timing` — spec `2f49340` v3 (`docs/superpowers/specs/2026-04-22-v0.2-p1-timing-design.md`), plan `3389d95` v2 (`docs/superpowers/plans/2026-04-22-v0.2-p1-timing-plan.md`), 12 tasks, 13 commits (T2 was 2 commits due to a mid-execution test-fix correction)

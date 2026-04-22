@@ -1,0 +1,133 @@
+{
+  "schema_version": 4,
+  "probed_at": "2026-04-23T05:45:00+08:00",
+  "kimi_version": "1.37.0",
+  "kimi_binary_path": "/Users/bing/.local/bin/kimi",
+  "platform": "darwin",
+  "host_macos_tmp_symlink": "/tmp -> private/tmp (realpath-resolved for kimi.json storage)",
+  "note": "Extends probe v3 (schema_version 3, probed 2026-04-20 against kimi 1.36.0) with resume-semantics experiments driven by v0.2 P2 spec needs. Q4.0 ghost-session hypothesis confirmed. Q4.1 reveals path-storage behavior DIFFERS between kimi 1.36 and 1.37 — 1.37 stores realpath-resolved paths (previously verbatim).",
+
+  "q4_0_ghost_session_hypothesis": {
+    "question": "Does kimi --print -r <fabricated-uuid> silently create a ghost session at that UUID?",
+    "result": "CONFIRMED — hypothesis holds in kimi 1.37.0",
+    "method": "From throwaway cwd /tmp/kimi-probe-v4-1776894306: (step 1) seeded real session via `kimi --print -p 'say OK' --quiet` → session 236d5d09-0c3e-49af-b637-d03ae2ca194b. (step 2) generated fabricated UUID 501c89f6-2566-4895-ae43-64b8c57ffe3e via uuidgen, verified not already on disk. (step 3) invoked `kimi --print -r 501c89f6-2566-4895-ae43-64b8c57ffe3e -p 'say OK' --quiet` from the same cwd.",
+    "kimi_exit_code": 0,
+    "kimi_stdout": "OK\n\nTo resume this session: kimi -r 501c89f6-2566-4895-ae43-64b8c57ffe3e",
+    "kimi_stderr": "(empty)",
+    "disk_side_effect_1": "Session directory created at ~/.kimi/sessions/<md5(/private/tmp/kimi-probe-v4-1776894306)>/501c89f6-2566-4895-ae43-64b8c57ffe3e/ with full 3-file layout (context.jsonl 17.1KB, state.json 390B, wire.jsonl 1005B)",
+    "disk_side_effect_2": "kimi.json work_dirs entry for the throwaway cwd had `last_session_id` updated from the real seed UUID (236d5d09-...) to the fabricated UUID (501c89f6-...) — kimi treats the ghost as the new 'last' session",
+    "user_visibility_of_ghost": "ZERO — no stderr warning, no visible indication that the provided UUID was not a pre-existing session. User-facing stdout is indistinguishable from a legitimate resume.",
+    "p2_implication": "wrapper-side pre-validation is strictly necessary. Without it, /kimi:resume with a bogus UUID silently creates a fresh session under that UUID and updates kimi.json, breaking the user's expectation of 'resume' semantics."
+  },
+
+  "q4_1_kimi_json_schema": {
+    "question": "What is the exact schema of ~/.kimi/kimi.json in kimi 1.37.0, and how is the work_dir path encoded?",
+    "top_level_keys": ["work_dirs"],
+    "top_level_schema_note": "Only `work_dirs` at the top level. No schema_version, no other metadata. This matches probe v3 finding for 1.36.",
+    "work_dirs_type": "Array (list), NOT an object keyed by path.",
+    "work_dirs_type_delta_from_spec": "Spec v1.1 §2.1 Q4.1 and §4.4 API assumed object-keyed lookup (`work_dirs[realCwd]`). REALITY: must iterate array, find by `.path === realCwd`. Spec v1.2 required.",
+    "work_dirs_entry_fields": ["path", "kaos", "last_session_id"],
+    "work_dirs_entry_sample": {
+      "path": "/private/tmp/kimi-probe-v4-1776894306",
+      "kaos": "local",
+      "last_session_id": "236d5d09-0c3e-49af-b637-d03ae2ca194b"
+    },
+    "kaos_field_meaning": "Unknown beyond observed value 'local'. Likely distinguishes local vs remote kaos (Kimi-as-OS) backend. Not load-bearing for P2.",
+    "path_storage_format": "realpath-resolved (NOT verbatim as probe v3 found for kimi 1.36)",
+    "path_storage_evidence": "Input cwd /tmp/kimi-probe-v4-1776894306 was stored as /private/tmp/kimi-probe-v4-1776894306 (the macOS /tmp -> /private/tmp symlink was resolved). md5(/private/tmp/...) matches the sessions dir; md5(/tmp/...) does NOT.",
+    "path_storage_delta_from_probe_v3": "probe v3 probe 06 (kimi 1.36) concluded paths were stored VERBATIM (md5 of realpath did NOT match stored hash). kimi 1.37 changed this — paths are now realpath-resolved. Either kimi 1.37 added a `realpath()` call in `kimi_cli/session.py::canonical()`, or the behavior was always realpath on macOS for /tmp and probe v3's finding was platform-specific. Either way: spec §7.7 decision (wrapper normalizes via realpath) REMAINS CORRECT for 1.37 — symmetry holds.",
+    "p2_implication_1": "§4.4 API: change pseudocode from `work_dirs[normalizedCwd]` to `work_dirs.find(w => w.path === normalizedCwd)`",
+    "p2_implication_2": "§2.4 Assumption A1: reaffirm with precise schema. No longer 'work_dirs is keyed by path' but 'work_dirs is array; path field matches realpath'. Upgrade A1 confidence to 'high (probe v4 Q4.1 confirmed)'."
+  },
+
+  "q4_2_sessions_dir_layout": {
+    "question": "What is the layout of ~/.kimi/sessions/<md5(work_dir_path)>/<uuid>/? Which files indicate ≥1 real message exchange?",
+    "three_files_per_session": ["context.jsonl", "state.json", "wire.jsonl"],
+    "context_jsonl": {
+      "purpose": "Messages (user/assistant/system/tool events), JSONL format (one event per line)",
+      "encoding": "UTF-8 JSON text",
+      "size_for_trivial_1turn_exchange": "~17 KB (includes the kimi-cli built-in system prompt + one user + one assistant message)",
+      "size_for_empty_session": "(not observed — see Q4.4; kimi appears to write context.jsonl immediately on first turn)",
+      "first_event_example": "{\"role\": \"_system_prompt\", \"content\": \"You are Kimi Code CLI, ...\"}"
+    },
+    "state_json": {
+      "purpose": "Session metadata: approval state, title, archive flags, todos",
+      "encoding": "UTF-8 JSON",
+      "size": "~400 bytes",
+      "shape_sample_keys": ["version", "approval", "additional_dirs", "custom_title", "title_generated", "title_generate_attempts", "plan_mode", "plan_session_id", "plan_slug", "wire_mtime", "archived", "archived_at", "auto_archive_exempt", "todos"],
+      "version_observed": 1
+    },
+    "wire_jsonl": {
+      "purpose": "Wire protocol event log (kimi-cli internal)",
+      "encoding": "UTF-8 JSON text",
+      "size_trivial": "~1 KB"
+    },
+    "populated_session_detection_rule_for_validateResumeTarget": "existsSync(dir) && existsSync(dir + '/context.jsonl') && statSync(dir + '/context.jsonl').size > 0 — context.jsonl is the load-bearing file; if it exists with non-zero size, the session has at least the system prompt + first user message recorded.",
+    "placeholder_file_before_first_turn": "Not observed. kimi appears to write the session dir + all 3 files after the first turn completes (atomically or near-atomic). No 'dir exists but context.jsonl absent' transient state seen in probe."
+  },
+
+  "q4_3_cross_cwd_collision": {
+    "question": "If UUID X was created in cwd A, what happens when `kimi --print -r X` is invoked from cwd B?",
+    "result": "Ghost-session behavior TRIGGERS — kimi creates a NEW session dir at ~/.kimi/sessions/<md5(cwdB)>/<X>/ with full 3-file layout, and updates kimi.json work_dirs entry for cwdB with last_session_id=X. The original cwdA session is unaffected on disk but cwdB now has a duplicate.",
+    "method": "From /tmp/kimi-probe-v4-cross-1776894306 (cwd B, different md5 from cwd A): invoked `kimi --print -r 236d5d09-0c3e-49af-b637-d03ae2ca194b -p 'say OK' --quiet` (the UUID from cwd A's seed session).",
+    "kimi_exit_code": 0,
+    "disk_side_effect": "Created ~/.kimi/sessions/e98fe6a757630f40c0c9124c1e2e1157/236d5d09-0c3e-49af-b637-d03ae2ca194b/ (md5 of /private/tmp/kimi-probe-v4-cross-1776894306). Original cwd A session at md5=4be2dad... unaffected.",
+    "p2_implication": "§7.3 spec decision to REFUSE cross-cwd resume is strongly justified — without wrapper pre-validation, users passing a UUID from a different cwd would silently fork a duplicate session. validateResumeTarget's cwd-scoped check (only search under md5(currentCwd)) is the correct safety."
+  },
+
+  "q4_4_ghost_disk_shape": {
+    "question": "What does the ghost session directory look like? How does it differ from a real session?",
+    "answer": "POST-HOC, ghost and real session dirs are STRUCTURALLY IDENTICAL — both have the same 3 files (context.jsonl, state.json, wire.jsonl), same schema, similar sizes.",
+    "ghost_context_jsonl_size": 17111,
+    "real_context_jsonl_size": 17636,
+    "ghost_state_json_keys_match_real": true,
+    "ghost_content_difference": "custom_title differs (based on first user prompt), but structurally identical",
+    "implication_for_empty_detection": "After a ghost has been materialized (kimi was invoked with `-r <fake>`), the dir LOOKS real. We cannot distinguish a ghost from a real session AFTER kimi has run against it. The ONLY defense is pre-invocation validation: check the session existed BEFORE we call `kimi -r`.",
+    "narrow_session_empty_case": "The `session-empty` reason code in spec §6.1 captures a narrower state than originally framed: it fires when the dir exists but context.jsonl is absent or zero-byte. Probe shows kimi does NOT leave such transient dirs — it writes all 3 files after first turn completes. So `session-empty` mostly catches: (a) user-created placeholder dirs (weird edge), (b) a hypothetical kimi crash between mkdir and writing context.jsonl (not observed).",
+    "spec_refinement_needed": "spec §4.4 validateResumeTarget should use: `exists(dir) && exists(dir/context.jsonl) && size(dir/context.jsonl) > 0` as the 'populated' predicate."
+  },
+
+  "q4_5_uuid_variant": {
+    "question": "What UUID variant does kimi-cli 1.37 generate?",
+    "answer": "UUID version 4 (RFC 4122). Strict v4.",
+    "evidence": "Seeded session UUID 236d5d09-0c3e-49af-b637-d03ae2ca194b — uuid.UUID(...).version == 4; variant == 'specified in RFC 4122'.",
+    "p2_implication": "Spec §4.4 relaxed regex `/^[0-9a-f-]{36}$/i` correctly accepts v4. If we wanted to be strict, v4 pattern `[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}` would also work, but the relaxed form is future-proof against kimi-cli ever changing UUID scheme."
+  },
+
+  "q4_6_native_list_check_subcommand": {
+    "question": "Does kimi-cli 1.37 expose a native list or check session subcommand?",
+    "answer": "Partial — `kimi export [SESSION_ID]` exists but it's a ZIP-export tool, not a list/check. `-r/--resume` WITHOUT an ID offers interactive session picking (`-S, -r`), but that requires a TTY and doesn't fit slash-command one-shot model.",
+    "kimi_help_relevant_options": {
+      "--session / --resume (-S, -r)": "Resume a session. With ID: resume that session. Without ID: interactively pick a session.",
+      "--continue (-C)": "Continue the previous session for the working directory. Default: no.",
+      "export subcommand": "Export a session as a ZIP archive. Takes optional SESSION_ID; defaults to 'previous session'."
+    },
+    "major_finding_for_spec": "kimi 1.37 has a BUILT-IN `--continue` (-C) flag that does what /kimi:continue is specced to do — resume the previous session for the working directory. This means P2 could significantly simplify: /kimi:continue is a thin pass-through to `kimi -C`. However, /kimi:continue's wrapper-side validation value REMAINS — kimi -C appears to not ghost-check either (needs its own probe, see Q4.0 extension below).",
+    "q4_0_extension_probe_needed": "We did NOT probe whether `kimi -C` triggers ghost behavior when there's no prior session in cwd. Inferring from Q4.0: likely kimi -C in a fresh cwd would either no-op (exit 0 with 'no previous session') or create a ghost-new session. Spec v2 should consider whether to wrapper around `kimi -C` or stick with the explicit validate→`kimi -r <resolved-uuid>` path.",
+    "p2_implication_option_A": "Design A (unchanged from v1.1): /kimi:continue does resolveContinueTarget(cwd) → kimi -r <uuid>. Wrapper-side validation fully controls the ghost risk.",
+    "p2_implication_option_B": "Design B (new, probe-derived): /kimi:continue does wrapper-side check (is there a last_session_id in kimi.json for this cwd?) → if yes, kimi -C; if no, hard fail. Simpler; relies on kimi -C's native behavior for the resume.",
+    "recommendation": "Surface in 6-way review; preference is A because it's fully wrapper-controlled and doesn't depend on undocumented kimi -C semantics."
+  },
+
+  "rollup": [
+    "Q4.0: ghost-session hypothesis CONFIRMED in kimi 1.37.0 — exit 0, full session dir created, kimi.json updated. Spec motivation holds; wrapper-side validation is necessary.",
+    "Q4.1: kimi.json top-level has only work_dirs (list, not object-keyed). Each entry has {path, kaos, last_session_id}. Path is REALPATH-RESOLVED (delta from probe v3's 1.36 finding). Spec §4.4 must switch from object-index lookup to array iteration.",
+    "Q4.2: session dir has context.jsonl (messages) + state.json (metadata) + wire.jsonl (wire events). Populated predicate: context.jsonl exists AND size > 0.",
+    "Q4.3: cross-cwd resume with valid UUID from other cwd triggers ghost creation in the current cwd. §7.3 refusal well-justified.",
+    "Q4.4: ghost and real sessions are structurally identical post-hoc; pre-call validation is the only defense. `session-empty` reason code scope is narrower than spec v1.1 framed.",
+    "Q4.5: kimi-cli UUIDs are strict v4 RFC 4122. Relaxed regex still correct.",
+    "Q4.6: kimi 1.37 has built-in `--continue` (-C) flag. Optional alternative design for /kimi:continue — surface in 6-way review."
+  ],
+
+  "spec_revisions_needed_for_v1_2": [
+    "§4.4: resolveContinueTarget must iterate work_dirs array (use `.find(w => w.path === normalizedCwd)`), not object-index.",
+    "§4.4: validateResumeTarget 'populated' predicate: exists(dir) && exists(dir/context.jsonl) && size(dir/context.jsonl) > 0.",
+    "§2.4 Assumption A1: upgrade confidence to 'high — probe v4 Q4.1 confirmed' AND change shape to 'work_dirs is list of {path, kaos, last_session_id}'.",
+    "§2.4 Assumption A2: update to cite context.jsonl + state.json + wire.jsonl 3-file layout per Q4.2.",
+    "§2.4 Assumption A3: narrow — ghost sessions are not distinguishable post-hoc; pre-call validation is the defense (already the design).",
+    "§12.2 new open question: should /kimi:continue wrap `kimi -C` (native) or continue the explicit resolveContinueTarget → kimi -r <uuid> path? (surface in 6-way review.)",
+    "Confirm §9.2 BREAKING note: ghost-session hardening is NOT 'pending probe' — probe confirmed the hypothesis. Framing can go back to 'fixes' not 'may fix'."
+  ],
+
+  "cleanup_method": "cleanup.sh step-by-step: (1) cp -av ~/.kimi/kimi.json ~/.kimi/kimi.json.bak-probe-v4-<ts> (done pre-probe). (2) after all Q4 experiments: `python3` surgical removal of work_dirs entries matching /private/tmp/kimi-probe-v4*, write back. (3) rm -rf ~/.kimi/sessions/4be2dad86b97966a68e6805446b784fa (cwd A md5). (4) rm -rf ~/.kimi/sessions/e98fe6a757630f40c0c9124c1e2e1157 (cwd B md5). (5) rm -rf /tmp/kimi-probe-v4-*."
+}

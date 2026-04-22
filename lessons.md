@@ -502,3 +502,50 @@ the checklist" looks like.
 | `phase-4-background` | 52f1091 | `/kimi:rescue` + background + agent + hooks; T6/T7 PASS |
 | `phase-4-polish` | 75ae5fe | Post-review polish (codex C-M1 + gemini G-H1) |
 | `phase-5-final` | (set by Task 5.10) | Adversarial-review + review.mjs extraction + skill + lessons.md + phase-1-template; T9 + T5-regate PASS; v0.1 frozen |
+
+---
+
+#### P2 — v0.2 New Commands (2026-04-23)
+
+**Ship-state**: `feat/v0.2-p2-commands`. 15 tasks (bundled some per-task commits; ~11 commits total). Plan: `docs/superpowers/plans/2026-04-23-v0.2-p2-new-commands-plan.md` (v2, `b0c6d8f`). Spec: `docs/superpowers/specs/2026-04-22-v0.2-p2-new-commands-design.md` (v2, `5c5e329`). Probe: `doc/probe/probe-results-v4.json` (v4, `7529f1e`).
+
+**Review cycles**:
+- Spec: v1 (Codex round 1; 18 findings, 16 accepted) → v1.1 (`43b4bb5`) → probe v4 refinements → v1.2 (`16492c5`) → v2 (6-way round 1: codex + gemini + kimi + qwen + minimax + claude-self parallel; ~55 findings, 11 blockers/must-fix + 5 should-fix + 3 nice-to-have accepted, 1 deferred, 0 rejected; `5c5e329`).
+- Plan: v1 (`39ecc7b`) → v2 (`b0c6d8f`; Codex single-reviewer: 1 blocker + 5 must-fix + 5 should-fix accepted).
+- Code: autonomous overnight execution — hybrid SDD (mechanical tasks inline, final holistic review). Deviation from strict SDD per-task review-loop; documented here as follow-up for future P2-class batches.
+
+**Key realizations**:
+- **Ghost-session hypothesis CONFIRMED in kimi 1.37** (probe v4 Q4.0): `kimi --print -r <fab-uuid>` exit 0 + full 3-file session dir materialized + kimi.json updated. Wrapper-side pre-validation is strictly necessary.
+- **Kimi source-read corrected 3 factual errors** (6-way round 1, Kimi reviewer):
+  - PR #1716 claim is false — ghost affects ALL modes, not just --print.
+  - `kimi -C` is safely hard-fails (BadParameter) on no prior session — not risky.
+  - `metadata.py:51-55` matches work_dirs on BOTH .path AND .kaos — wrapper must filter by kaos too.
+- **work_dirs is a LIST, not object-keyed dict** (probe v4 Q4.1, delta from v1/v1.1 spec assumption).
+- **kimi 1.37 stores realpath-resolved paths** in work_dirs (delta from probe v3's 1.36 verbatim finding). Actually platform `Path.cwd()` behavior on macOS, not a kimi version change.
+- **runAsk's parseArgs does NOT error on unknown long flags** — falls to positionals. T6 BREAKING required explicit --resume/-r rejection at top of runAsk (Codex plan-review blocker; would otherwise leak into prompt).
+- **callKimi's result shape**: `{ok, response, sessionId, thinkBlocks, error, status, partialResponse, exitCode, signal, timings}`. NO `.model` field (plan v1 T5 footer tried to use result.model; v2 corrected to use `formatAskFooter()` helper).
+- **formatAskFooter is module-scope** in kimi-companion.mjs:399 (not exported but reachable within the file). Reused by runContinue/runResume.
+- **Session dir has 3 files**: context.jsonl (messages, UTF-8 JSONL, ≥17 KB for 1-turn exchange), state.json (metadata ~400 B), wire.jsonl (wire protocol ~1 KB). "Populated" predicate = context.jsonl exists as regular file + size > 0.
+- **FIFO / file-at-dir-pos / dangling-symlink / ELOOP** all classified correctly by `statSync` + `isDirectory()` + `isFile()` chain — no `existsSync` reliance (existsSync doesn't throw so fs-error path was unreachable in plan v1).
+- **Resume-mismatch protection** (runAsk had it, plan v1 omitted from runContinue/runResume — critical since those always request a specific sessionId; v2 added back). Exits 1 on mismatch so Claude surfaces continuity failure.
+- **ANSI-escape injection via hostile cwd names** (MiniMax round-1): `sanitizeForStderr` helper strips CSI + control chars before template substitution.
+
+**Conditional-defers registered**:
+
+| # | Item | Trigger to revisit | Current state |
+|---|---|---|---|
+| D-P2.1 | Concurrent-write race — wrong-session-resume scenario (spec §7.6 scenario 6.2, MiniMax round-1) | Real user incident | Observational only; no deterministic test. Resume-mismatch warning + exit-1 in runContinue/runResume is best-effort (catches the case where kimi returns a different sessionId than requested). |
+| D-P2.2 | `/kimi:ask --resume` deprecation warning before BREAKING removal | User confusion report | Currently hard-fails with clear "removed" message. Could soften to deprecation + flag for one release if users complain. |
+| D-P2.3 | Probe CI-safety (backup filename collision on parallel runs) | CI adoption | Single-developer scope; probe v4 executed once; future CI would add timestamped unique backup names. |
+| D-P2.4 | wire.jsonl-only populated session (our predicate is context.jsonl-only) | User reports resumable session failing wrapper check | Known divergence from kimi-cli's own `is_empty()` logic. Benign in observed operation. |
+| D-P2.5 | Legacy pre-migration sessions (flat `<uuid>.jsonl` before migration to `<uuid>/context.jsonl`) | User reports old session rejection | Low probability since migration runs on every `Session.find`. Theoretical edge. |
+| D-P2.6 | Spec §8.2 mock-based testing vs. actual spawn-based | Future ESM mock-module tooling maturity | Plan v2 uses spawn-based integration (simpler, deterministic). Spec §8.2 language says "mock"; deviation documented in plan review log. Not re-opened in spec. |
+| D-P2.7 | SDD per-task review-loop (strict skill protocol) | Lower-time-pressure future P-class work | P2 used hybrid SDD (mechanical tasks inline, final review). Cost/speed trade-off; strict SDD adds ~2hr per task via review dispatches. |
+
+### Plan-vs-reality supersessions (P2)
+
+| # | Plan said | Execution did | Why |
+|---|---|---|---|
+| S8 | T9 strict `/--resume\b/` regex on ask.md | Relaxed to frontmatter-only match | Spec §9.5 "Resuming a previous session" subsection mentions `/kimi:ask --resume` in BREAKING note — useful user docs. Strict regex would forbid that. T9 now checks argument-hint frontmatter specifically. |
+| S9 | T1 md5CwdPath known-value `/tmp/foo` = `74e3bdfbbb...` | Actual value `bc5487f033a0af65dff1ff0bd4000d75` | Plan author guessed wrong md5 from memory. Corrected to verified python3 hashlib output. |
+
