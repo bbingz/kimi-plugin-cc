@@ -168,10 +168,17 @@ export function validateReviewOutput(data) {
 
 // All non-ok returns from the shared review pipeline go through this helper so
 // render-layer consumers see a consistent failure shape.
+// `truncationNotice` / `retryNotice` default to the module-level constants so
+// external callers (non-pipeline) keep the v0.1 shape. `runReviewPipeline`
+// threads the caller-effective values (derived from `maxDiffChars`) through
+// every call site below so sibling plugins with a smaller budget don't see a
+// "150 KB" notice on error paths (T5 I1).
 export function reviewError({
   error, rawText = null, parseError = null, firstRawText = null,
   transportError = null, truncated, retry_used, sessionId = null,
   status = null,
+  truncationNotice = TRUNCATION_NOTICE,
+  retryNotice = RETRY_NOTICE,
 }) {
   return {
     // Compose canonical envelope (ok, kind, error, status, stdout, detail)
@@ -190,9 +197,9 @@ export function reviewError({
     firstRawText,
     transportError,
     truncated,
-    truncation_notice: truncated ? TRUNCATION_NOTICE : null,
+    truncation_notice: truncated ? truncationNotice : null,
     retry_used,
-    retry_notice: retry_used ? RETRY_NOTICE : null,
+    retry_notice: retry_used ? retryNotice : null,
     sessionId,
   };
 }
@@ -235,6 +242,8 @@ export function runReviewPipeline({
       error: `Failed to build review prompt: ${e.message}`,
       truncated,
       retry_used: false,
+      truncationNotice,
+      retryNotice,
     });
   }
 
@@ -249,6 +258,8 @@ export function runReviewPipeline({
       truncated,
       retry_used: false,
       sessionId: (firstResult && firstResult.sessionId) ?? null,
+      truncationNotice,
+      retryNotice,
     });
   }
 
@@ -285,6 +296,8 @@ export function runReviewPipeline({
       truncated,
       retry_used: true,
       sessionId: firstResult.sessionId ?? null,
+      truncationNotice,
+      retryNotice,
     });
   }
   const retryResult = callLLM({
@@ -303,6 +316,8 @@ export function runReviewPipeline({
       truncated,
       retry_used: true,
       sessionId: (retryResult && retryResult.sessionId) ?? null,
+      truncationNotice,
+      retryNotice,
     });
   }
 
@@ -316,6 +331,8 @@ export function runReviewPipeline({
       truncated,
       retry_used: true,
       sessionId: retryResult.sessionId ?? null,
+      truncationNotice,
+      retryNotice,
     });
   }
   const retryValidation = validateReviewOutput(retryExtracted.data);
@@ -327,6 +344,8 @@ export function runReviewPipeline({
       truncated,
       retry_used: true,
       sessionId: retryResult.sessionId ?? null,
+      truncationNotice,
+      retryNotice,
     });
   }
 

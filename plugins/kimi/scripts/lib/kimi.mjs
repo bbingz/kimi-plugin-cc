@@ -471,7 +471,11 @@ export function callKimi({
   resumeSessionId = null,
 }) {
   const guardResult = checkPromptSize(prompt, { kind: "ask", label: "ask" });
-  if (guardResult) return guardResult;
+  // T6 I-1: enrich canonical errorResult with stream-shape fields so the guard
+  // return is a superset of `streamErrorResult`. Downstream readers expecting
+  // `partialResponse`/`events` on any non-ok callKimi return don't see
+  // undefined on the oversize path.
+  if (guardResult) return { ...guardResult, partialResponse: null, events: [] };
 
   // ── Pre-flight (codex C2) ──
   // Validate requested model against ~/.kimi/config.toml [models.*] BEFORE
@@ -582,7 +586,9 @@ export function callKimiStreaming({
   onEvent = () => {},
 }) {
   const guardResult = checkPromptSize(prompt, { kind: "task", label: "task" });
-  if (guardResult) return Promise.resolve(guardResult);
+  // T6 I-1: same shape-merge as callKimi — guard return becomes a superset of
+  // streamErrorResult so streaming consumers see `partialResponse`/`events`.
+  if (guardResult) return Promise.resolve({ ...guardResult, partialResponse: null, events: [] });
 
   // Pre-flight model check, same as callKimi (codex C2).
   if (model) {

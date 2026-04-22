@@ -705,7 +705,15 @@ function runJobResult(rawArgs) {
   // flag needed).
   const reference = positionals[0] || null;
 
-  const job = resolveResultJob(workspaceRoot, reference);
+  // T7 I1: treat expired jobs as not-found in the /kimi:result render path,
+  // mirroring the C6 filter applied in runJobStatus. Without this, /kimi:status
+  // hides an expired job while /kimi:result <expiredId> still returns its
+  // artifacts — UX asymmetry. Re-resolve against the filtered job if the
+  // expired one would have matched.
+  let job = resolveResultJob(workspaceRoot, reference);
+  if (job && filterExpired([job]).length === 0) {
+    job = null;
+  }
   if (!job) {
     process.stdout.write(JSON.stringify({
       ok: false,
