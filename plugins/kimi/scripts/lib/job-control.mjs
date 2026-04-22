@@ -193,6 +193,7 @@ export function runWorker(jobId, workspaceRoot, companionScript, args) {
       pid: null,
       kimiSessionId,
       updatedAt: now,
+      completedAt: now,  // C6: TTL filter keys off this
     };
   });
   if (wasCancelled) {
@@ -282,6 +283,7 @@ export async function runStreamingWorker(jobId, workspaceRoot, config) {
       pid: null,
       kimiSessionId,
       updatedAt: now,
+      completedAt: now,  // C6: TTL filter keys off this
     });
   });
 
@@ -621,6 +623,7 @@ export function cancelJob(workspaceRoot, jobId) {
     status: "cancelled",
     phase: "cancelled",
     pid: null,
+    completedAt: new Date().toISOString(),  // C6: TTL filter keys off this
   });
 
   return { cancelled: true, jobId };

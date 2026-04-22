@@ -81,9 +81,18 @@ function cleanupSessionJobs(cwd, sessionId) {
     }
   }
 
+  // C6: narrow SessionEnd cleanup — keep terminal-status jobs (completed /
+  // failed / cancelled) from the ended session so /kimi:result <jobId> still
+  // works after the user reopens Claude Code. Only running/queued jobs from
+  // this session are dropped (their workers have just been SIGTERM'd above).
   saveState(workspaceRoot, {
     ...state,
-    jobs: state.jobs.filter((j) => j.sessionId !== sessionId),
+    jobs: state.jobs.filter((j) => {
+      if (j.sessionId !== sessionId) return true;
+      return j.status === "completed"
+          || j.status === "failed"
+          || j.status === "cancelled";
+    }),
   });
 }
 

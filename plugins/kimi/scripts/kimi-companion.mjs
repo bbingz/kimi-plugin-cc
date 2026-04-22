@@ -32,7 +32,7 @@ import {
   readStoredJobResult,
   SESSION_ID_ENV,
 } from "./lib/job-control.mjs";
-import { upsertJob, getConfig, setConfig } from "./lib/state.mjs";
+import { upsertJob, getConfig, setConfig, filterExpired } from "./lib/state.mjs";
 import { binaryAvailable } from "./lib/process.mjs";
 import { ensureGitRepository, collectReviewContext, isEmptyContext } from "./lib/git.mjs";
 import { errorResult } from "./lib/errors.mjs";
@@ -671,16 +671,26 @@ function runJobStatus(rawArgs) {
 
   if (jobId) {
     const single = buildSingleJobSnapshot(workspaceRoot, jobId);
-    if (!single) {
+    // C6: treat expired jobs as not-found in the /kimi:status render path.
+    // Physical purge happens lazily inside updateState; this is the UX filter.
+    const visible = single ? filterExpired([single]) : [];
+    if (visible.length === 0) {
       process.stdout.write(JSON.stringify({ ok: false, error: `Job ${jobId} not found` }, null, 2) + "\n");
       process.exit(1);
     }
-    process.stdout.write(JSON.stringify(single, null, 2) + "\n");
+    process.stdout.write(JSON.stringify(visible[0], null, 2) + "\n");
     process.exit(0);
   }
 
   const snapshot = buildStatusSnapshot(workspaceRoot, { showAll: options.all });
-  process.stdout.write(JSON.stringify(snapshot, null, 2) + "\n");
+  // C6: filter expired terminal jobs from the rendered snapshot. Running/queued
+  // jobs have no completedAt and are passed through by filterExpired unchanged.
+  const filtered = {
+    ...snapshot,
+    running: filterExpired(snapshot.running),
+    recent: filterExpired(snapshot.recent),
+  };
+  process.stdout.write(JSON.stringify(filtered, null, 2) + "\n");
   process.exit(0);
 }
 
