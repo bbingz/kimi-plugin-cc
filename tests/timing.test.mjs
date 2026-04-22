@@ -2,9 +2,14 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import os from "node:os";
+import fs from "node:fs";
 import { resolveTimingsFile, resolveTimingsLockFile } from "../plugins/kimi/scripts/lib/paths.mjs";
 
-import { TimingAccumulator } from "../plugins/kimi/scripts/lib/timing.mjs";
+import {
+  TimingAccumulator,
+  appendTimingHistory,
+  loadTimingHistory,
+} from "../plugins/kimi/scripts/lib/timing.mjs";
 
 describe("paths.mjs — timing helpers", () => {
   it("resolveTimingsFile() returns ~/.kimi/plugin-cc/timings.ndjson", () => {
@@ -108,5 +113,147 @@ describe("TimingAccumulator — toJSON()", () => {
   it("bgWaitEntered boolean passes through to toJSON output", () => {
     const r = new TimingAccumulator({ ...baseInput, bgWaitEntered: true }).toJSON();
     assert.equal(r.bgWaitEntered, true);
+  });
+});
+
+// Test isolation helpers — each test runs in a fresh tmp HOME so timings file is pristine.
+let origHome;
+function setupIsolatedHome() {
+  origHome = process.env.HOME;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kimi-timing-test-"));
+  process.env.HOME = tmp;
+  return tmp;
+}
+function teardownHome(tmp) {
+  process.env.HOME = origHome;
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+describe("appendTimingHistory + loadTimingHistory", () => {
+  it("first call creates file + parent dir + envelope fields", () => {
+    const tmp = setupIsolatedHome();
+    try {
+      const record = new TimingAccumulator({
+        spawnedAt: 1000, firstEventAt: 1200, lastEventAt: 4900, closedAt: 5000,
+      }).toJSON();
+      const ok = appendTimingHistory("job-abc", "ask", record);
+      assert.equal(ok, true);
+
+      const file = resolveTimingsFile();
+      assert.ok(fs.existsSync(file), "file created");
+      const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean);
+      assert.equal(lines.length, 1);
+      const parsed = JSON.parse(lines[0]);
+      assert.equal(parsed.jobId, "job-abc");
+      assert.equal(parsed.kind, "ask");
+      assert.equal(parsed.schemaVersion, 1);
+      assert.equal(typeof parsed.recordedAt, "number");
+      assert.equal(parsed.invariantKind, "3term");
+      // Envelope (4) + inner (21) = 25 total
+      assert.equal(Object.keys(parsed).length, 25);
+    } finally { teardownHome(tmp); }
+  });
+
+  it("subsequent calls append; file ends with \\n", () => {
+    const tmp = setupIsolatedHome();
+    try {
+      const record = new TimingAccumulator({ spawnedAt: 1, firstEventAt: 2, lastEventAt: 3, closedAt: 4 }).toJSON();
+      appendTimingHistory("job-1", "ask", record);
+      appendTimingHistory("job-2", "review", record);
+      const text = fs.readFileSync(resolveTimingsFile(), "utf8");
+      assert.ok(text.endsWith("\n"));
+      assert.equal(text.split("\n").filter(Boolean).length, 2);
+    } finally { teardownHome(tmp); }
+  });
+
+  it("crash-recovery leading newline: if file lacks trailing \\n, next append prepends one", () => {
+    const tmp = setupIsolatedHome();
+    try {
+      const file = resolveTimingsFile();
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      // Simulate a torn write — valid JSON but no trailing newline
+      fs.writeFileSync(file, '{"jobId":"torn","kind":"ask","recordedAt":1,"schemaVersion":1}');
+      const record = new TimingAccumulator({ spawnedAt: 1, firstEventAt: 2, lastEventAt: 3, closedAt: 4 }).toJSON();
+      appendTimingHistory("job-fresh", "ask", record);
+      const text = fs.readFileSync(file, "utf8");
+      // Expect \n between torn record and fresh one
+      const lines = text.split("\n").filter(Boolean);
+      assert.equal(lines.length, 2);
+      assert.equal(JSON.parse(lines[0]).jobId, "torn");
+      assert.equal(JSON.parse(lines[1]).jobId, "job-fresh");
+    } finally { teardownHome(tmp); }
+  });
+
+  it("loadTimingHistory returns [] when file missing", () => {
+    const tmp = setupIsolatedHome();
+    try {
+      assert.deepEqual(loadTimingHistory(), []);
+    } finally { teardownHome(tmp); }
+  });
+
+  it("loadTimingHistory strips truncated last line before splitting", () => {
+    const tmp = setupIsolatedHome();
+    try {
+      const file = resolveTimingsFile();
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      // Valid line + truncated partial line (no closing brace; no trailing newline)
+      fs.writeFileSync(file, '{"jobId":"a","kind":"ask","recordedAt":1,"schemaVersion":1,"invariantKind":"3term"}\n{"jobId":"b","kind');
+      const records = loadTimingHistory();
+      assert.equal(records.length, 1);
+      assert.equal(records[0].jobId, "a");
+    } finally { teardownHome(tmp); }
+  });
+
+  it("loadTimingHistory with limit=N returns last N records", () => {
+    const tmp = setupIsolatedHome();
+    try {
+      const record = new TimingAccumulator({ spawnedAt: 1, firstEventAt: 2, lastEventAt: 3, closedAt: 4 }).toJSON();
+      for (let i = 0; i < 5; i++) appendTimingHistory(`job-${i}`, "ask", record);
+      const last3 = loadTimingHistory({ limit: 3 });
+      assert.equal(last3.length, 3);
+      assert.equal(last3[0].jobId, "job-2");
+      assert.equal(last3[2].jobId, "job-4");
+    } finally { teardownHome(tmp); }
+  });
+
+  // v2 additions (S1, S3 edge cases):
+  it("envelope fields spawnedAt/recordedAt are both typeof number — guards minimax ISO drift (S1)", () => {
+    const tmp = setupIsolatedHome();
+    try {
+      const record = new TimingAccumulator({
+        spawnedAt: 1000, firstEventAt: 1200, lastEventAt: 4900, closedAt: 5000,
+      }).toJSON();
+      appendTimingHistory("job-x", "ask", record);
+      const line = fs.readFileSync(resolveTimingsFile(), "utf8").split("\n").filter(Boolean)[0];
+      const parsed = JSON.parse(line);
+      assert.equal(typeof parsed.spawnedAt, "number", "spawnedAt must be epoch ms number, NOT ISO string");
+      assert.equal(typeof parsed.recordedAt, "number", "recordedAt must be epoch ms number");
+    } finally { teardownHome(tmp); }
+  });
+
+  it("empty jobId accepted — envelope records jobId as empty string (S3 edge case)", () => {
+    const tmp = setupIsolatedHome();
+    try {
+      const record = new TimingAccumulator({ spawnedAt: 1, firstEventAt: 2, lastEventAt: 3, closedAt: 4 }).toJSON();
+      const ok = appendTimingHistory("", "ask", record);
+      assert.equal(ok, true);
+      const parsed = JSON.parse(fs.readFileSync(resolveTimingsFile(), "utf8").split("\n").filter(Boolean)[0]);
+      assert.equal(parsed.jobId, "", "empty jobId stored as empty string, not undefined");
+    } finally { teardownHome(tmp); }
+  });
+
+  it("lock timeout returns false without throwing (S3 edge case)", () => {
+    const tmp = setupIsolatedHome();
+    try {
+      // Simulate held lock by creating the lockfile with a live pid (process.pid itself)
+      fs.mkdirSync(path.dirname(resolveTimingsLockFile()), { recursive: true });
+      fs.writeFileSync(resolveTimingsLockFile(), String(process.pid));
+      const record = new TimingAccumulator({ spawnedAt: 1, firstEventAt: 2, lastEventAt: 3, closedAt: 4 }).toJSON();
+      // With a live-pid lockfile younger than stale_ms, acquire will time out → return false
+      const ok = appendTimingHistory("job-blocked", "ask", record);
+      assert.equal(ok, false);
+      // Clean up the manufactured lock
+      try { fs.unlinkSync(resolveTimingsLockFile()); } catch {}
+    } finally { teardownHome(tmp); }
   });
 });
