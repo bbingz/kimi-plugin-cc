@@ -2,6 +2,16 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-22 [Claude Opus 4.7 — v0.2 P3 Task 1 (C2): canonical errorResult + cross-module migration]
+
+- **status**: done (Task 1 of 11 in v0.2 P3 polish batch, executed in worktree `feat/v0.2-p3-polish`)
+- **scope**: `plugins/kimi/scripts/lib/errors.mjs` (NEW), `plugins/kimi/scripts/lib/kimi.mjs`, `plugins/kimi/scripts/lib/review.mjs`, `plugins/kimi/scripts/kimi-companion.mjs`, `CHANGELOG.md`
+- **summary**: created neutral leaf module `lib/errors.mjs` with canonical `errorResult({kind, error, status, stdout, detail})` envelope. Renamed kimi.mjs's local `errorResult` → `streamErrorResult` (reflects its actual stream-specific purpose: returns `partialResponse + events` from stdout parse) across 1 definition + 7 callsites. Migrated 4 companion catch blocks (runReview/runAdversarialReview ensureGitRepository catches + runTask 2 USAGE_ERROR exits) and 2 review-fallback synthesis sites (runReview/runAdversarialReview try-block fallbacks) to compose the canonical shape. `reviewError` in `review.mjs` now composes the canonical envelope via spread + preserves all pipeline-specific fields (rawText, parseError, firstRawText, transportError, truncation_notice, retry_used/notice, sessionId).
+- **why neutral module**: placing `errorResult` in `job-control.mjs` (original spec location) would have created a circular dependency — job-control.mjs imports from kimi.mjs, and kimi.mjs needs `errorResult` for the C3 prompt-size guard (Task 6). Plus kimi.mjs's existing local `errorResult` has a *different* signature. `lib/errors.mjs` is a leaf with zero imports; every consumer depends ON it but nothing it depends on.
+- **plan deviation noted**: plan Step 5a labeled the line-387 catch as "runAsk" with `kind: "ask"`, but line 387 is physically inside `runReview` (runAsk has no top-level try/catch). Used `kind: "review"` to match actual function context. Plan labels 5b and 5c then correctly overlap with 5a.
+- **verifications**: 4× `node --check` clean · `errorResult({kind:'ask',error:'x'})` returns `{ok:false,kind:'ask',error:'x',status:null,stdout:'',detail:null}` · `kimi.mjs` loads 33 exports · `reviewError` output keys = `[ok,kind,error,status,stdout,detail,rawText,parseError,firstRawText,transportError,truncated,truncation_notice,retry_used,retry_notice,sessionId]` · `kimi-companion.mjs` prints usage without error.
+- **next**: Task 2 (C4 rename targets in job-control.mjs — kimiSessionId + SESSION_ID_ENV + KIMI_STATUS_TIMED_OUT).
+
 ## 2026-04-22 [Claude Opus 4.7 — v0.2 P3 polish-batch implementation plan (v2 post-3-way-review)]
 
 - **status**: done (plan only; execution next via `superpowers:subagent-driven-development`)

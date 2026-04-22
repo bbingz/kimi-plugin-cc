@@ -36,6 +36,7 @@ import {
 import { upsertJob, getConfig, setConfig } from "./lib/state.mjs";
 import { binaryAvailable } from "./lib/process.mjs";
 import { ensureGitRepository, collectReviewContext, isEmptyContext } from "./lib/git.mjs";
+import { errorResult } from "./lib/errors.mjs";
 
 // Plugin root is two levels above this file (scripts/kimi-companion.mjs →
 // plugins/kimi). Used for loading packaged schemas.
@@ -384,7 +385,7 @@ async function runReview(rawArgs) {
   try {
     ensureGitRepository(cwd);
   } catch (e) {
-    process.stdout.write(JSON.stringify({ ok: false, error: e.message }, null, 2) + "\n");
+    process.stdout.write(JSON.stringify(errorResult({ kind: "review", error: e.message }), null, 2) + "\n");
     process.exit(1);
   }
 
@@ -438,8 +439,7 @@ async function runReview(rawArgs) {
     });
   } catch (e) {
     result = {
-      ok: false,
-      error: `Unexpected error during review: ${e.message}`,
+      ...errorResult({ kind: "review", error: `Unexpected error during review: ${e.message}` }),
       truncated,
       retry_used: false,
     };
@@ -481,7 +481,7 @@ async function runAdversarialReview(rawArgs) {
   try {
     ensureGitRepository(cwd);
   } catch (e) {
-    process.stdout.write(JSON.stringify({ ok: false, error: e.message }, null, 2) + "\n");
+    process.stdout.write(JSON.stringify(errorResult({ kind: "adversarial-review", error: e.message }), null, 2) + "\n");
     process.exit(1);
   }
 
@@ -552,8 +552,7 @@ async function runAdversarialReview(rawArgs) {
     });
   } catch (e) {
     result = {
-      ok: false,
-      error: `Unexpected error during adversarial review: ${e.message}`,
+      ...errorResult({ kind: "adversarial-review", error: `Unexpected error during adversarial review: ${e.message}` }),
       truncated,
       retry_used: false,
     };
@@ -586,7 +585,7 @@ async function runTask(rawArgs) {
   // Mutual-exclusion
   if (options["resume-last"] && options.fresh) {
     const err = "Choose either --resume-last or --fresh, not both.";
-    if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: err }, null, 2) + "\n");
+    if (options.json) process.stdout.write(JSON.stringify(errorResult({ kind: "task", error: err }), null, 2) + "\n");
     else process.stderr.write("Error: " + err + "\n");
     process.exit(KIMI_EXIT.USAGE_ERROR);
   }
@@ -597,7 +596,7 @@ async function runTask(rawArgs) {
   }
   if (!prompt) {
     const err = "Provide a prompt or use --resume-last.";
-    if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: err }, null, 2) + "\n");
+    if (options.json) process.stdout.write(JSON.stringify(errorResult({ kind: "task", error: err }), null, 2) + "\n");
     else process.stderr.write("Error: " + err + "\n");
     process.exit(KIMI_EXIT.USAGE_ERROR);
   }

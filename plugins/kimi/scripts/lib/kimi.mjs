@@ -6,6 +6,7 @@ import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 import { loadPromptTemplate, interpolateTemplate } from "./prompts.mjs";
 import { runCommand, binaryAvailable } from "./process.mjs";
+import { errorResult } from "./errors.mjs";
 import {
   MAX_REVIEW_DIFF_BYTES,
   TRUNCATION_NOTICE,
@@ -412,7 +413,12 @@ function describeKimiExit({ status, stdout, stderr }) {
 // All error paths include status + partialResponse + events (for debug /
 // partial recovery). All success paths include response + sessionId +
 // events + toolEvents + thinkBlocks.
-function errorResult({ status, error, stdout, events, textParts }) {
+//
+// Stream-specific error record for callKimi / callKimiStreaming failure paths.
+// Returns events + partialResponse derived from stdout parse — that's why
+// this can't be replaced by the canonical errorResult from ./errors.mjs.
+// Kept local; callers within this file reference it by the new name.
+function streamErrorResult({ status, error, stdout, events, textParts }) {
   const partialEvents = events ?? (stdout ? parseKimiStdout(stdout).events : []);
   const partialText = textParts
     ? textParts.join("")
@@ -442,7 +448,7 @@ export function callKimi({
   if (model) {
     const configured = readKimiConfiguredModels();
     if (configured.length > 0 && !configured.includes(model)) {
-      return errorResult({
+      return streamErrorResult({
         status: KIMI_EXIT.CONFIG_ERROR,
         error: `Model '${model}' is not configured in ~/.kimi/config.toml. Available: ${configured.join(", ")}`,
         events: [],
@@ -460,14 +466,14 @@ export function callKimi({
   });
 
   if (result.error) {
-    return errorResult({ error: result.error.message, events: [] });
+    return streamErrorResult({ error: result.error.message, events: [] });
   }
 
   // Map signaled exits (status=null + signal=SIGINT/SIGTERM) back to 130/143
   // so describeKimiExit + caller's process.exit() preserve POSIX semantics.
   const effectiveStatus = result.status ?? statusFromSignal(result.signal);
   if (effectiveStatus !== 0) {
-    return errorResult({
+    return streamErrorResult({
       status: effectiveStatus,
       error: describeKimiExit({ ...result, status: effectiveStatus }),
       stdout: result.stdout,
@@ -546,7 +552,7 @@ export function callKimiStreaming({
   if (model) {
     const configured = readKimiConfiguredModels();
     if (configured.length > 0 && !configured.includes(model)) {
-      return Promise.resolve(errorResult({
+      return Promise.resolve(streamErrorResult({
         status: KIMI_EXIT.CONFIG_ERROR,
         error: `Model '${model}' is not configured in ~/.kimi/config.toml. Available: ${configured.join(", ")}`,
         events: [],
@@ -635,7 +641,7 @@ export function callKimiStreaming({
       // Unified timeout contract (codex C6): same shape as other errors.
       // Check BEFORE signal mapping — our SIGTERM was self-inflicted.
       if (timedOut) {
-        resolve(errorResult({
+        resolve(streamErrorResult({
           status: KIMI_STATUS_TIMED_OUT,
           error: `kimi timed out after ${Math.round(timeout / 1000)}s`,
           events,
@@ -649,7 +655,7 @@ export function callKimiStreaming({
       // caller's `result.status ?? 1` folds SIGINT/SIGTERM into a plain exit 1.
       const effectiveStatus = status ?? statusFromSignal(signal);
       if (effectiveStatus !== 0) {
-        resolve(errorResult({
+        resolve(streamErrorResult({
           status: effectiveStatus,
           error: describeKimiExit({ status: effectiveStatus, stdout: textParts.join(""), stderr: stderrBuf }),
           events,
@@ -716,7 +722,7 @@ export function callKimiStreaming({
 
     child.on("error", (err) => {
       clearTimeout(timer);
-      resolve(errorResult({ error: err.message, events, textParts }));
+      resolve(streamErrorResult({ error: err.message, events, textParts }));
     });
   });
 }

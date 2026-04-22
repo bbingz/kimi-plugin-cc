@@ -1,6 +1,8 @@
 // Provider-agnostic review primitives. Sibling plugins can import the same
 // module; only the prompt builder and model-call wiring are provider-specific.
 
+import { errorResult } from "./errors.mjs";
+
 // ── Constants ─────────────────────────────────────────────
 //
 // Diff budget for any review pipeline. Current prompts leave margin for the
@@ -166,15 +168,17 @@ export function reviewError({
   status = null,
 }) {
   return {
-    ok: false,
-    error,
-    // Top-level `status` mirrors the `errorResult` shape in kimi.mjs so
-    // downstream exit-code mappers see a consistent field regardless of
-    // whether the failure originated in the transport layer or the review
-    // pipeline (qwen 4-way-review M2). Non-transport failures default to
-    // null; transport failures propagate status via `transportError.status`
-    // AND copy to top-level `status` for direct consumption.
-    status: status ?? (transportError?.status ?? null),
+    // Compose canonical envelope (ok, kind, error, status, stdout, detail)
+    // from ./errors.mjs, then layer on the pipeline-specific fields. Top-level
+    // `status` mirrors the transport-layer `streamErrorResult` shape in
+    // kimi.mjs so downstream exit-code mappers see a consistent field
+    // regardless of whether the failure originated in the transport layer or
+    // the review pipeline (qwen 4-way-review M2). Non-transport failures
+    // default to null; transport failures propagate status via
+    // `transportError.status` AND copy to top-level `status` for direct
+    // consumption. Adversarial callers can override `kind` at their call site
+    // if they need to.
+    ...errorResult({ kind: "review", error, status: status ?? (transportError?.status ?? null) }),
     rawText,
     parseError,
     firstRawText,
