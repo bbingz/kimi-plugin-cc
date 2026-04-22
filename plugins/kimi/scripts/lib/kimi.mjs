@@ -637,7 +637,7 @@ export function callKimiStreaming({
   const guardResult = checkPromptSize(prompt, { kind: "task", label: "task" });
   // T6 I-1: same shape-merge as callKimi — guard return becomes a superset of
   // streamErrorResult so streaming consumers see `partialResponse`/`events`.
-  if (guardResult) return Promise.resolve({ ...guardResult, partialResponse: null, events: [] });
+  if (guardResult) return Promise.resolve({ ...guardResult, partialResponse: null, events: [], exitCode: null, signal: null, timings: null });
 
   // Pre-flight model check, same as callKimi (codex C2).
   if (model) {
