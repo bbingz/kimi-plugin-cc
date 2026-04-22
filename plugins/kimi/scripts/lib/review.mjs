@@ -179,6 +179,12 @@ export function reviewError({
   status = null,
   truncationNotice = TRUNCATION_NOTICE,
   retryNotice = RETRY_NOTICE,
+  // P1 T7 Part C: pass-through for transport-layer timing signals. Callers
+  // thread these from the inner callLLM result when the pipeline fails AFTER
+  // a spawn; on pre-spawn failures (build-prompt errors) they stay null.
+  exitCode = null,
+  signal = null,
+  timings = null,
 }) {
   return {
     // Compose canonical envelope (ok, kind, error, status, stdout, detail)
@@ -201,6 +207,11 @@ export function reviewError({
     retry_used,
     retry_notice: retry_used ? retryNotice : null,
     sessionId,
+    // P1 additions: propagate transport-layer timing / exit signals so the
+    // render layer sees a uniform shape across transport and pipeline errors.
+    exitCode,
+    signal,
+    timings,
   };
 }
 
@@ -260,6 +271,11 @@ export function runReviewPipeline({
       sessionId: (firstResult && firstResult.sessionId) ?? null,
       truncationNotice,
       retryNotice,
+      // P1 T7 Part C: propagate timing / exit signals from the failed
+      // transport call. The inner callKimi return now always includes these.
+      exitCode: (firstResult && firstResult.exitCode) ?? null,
+      signal: (firstResult && firstResult.signal) ?? null,
+      timings: (firstResult && firstResult.timings) ?? null,
     });
   }
 
@@ -276,6 +292,10 @@ export function runReviewPipeline({
         retry_used: false,
         retry_notice: null,
         sessionId: firstResult.sessionId,
+        // P1 additions: pass-through transport timing.
+        exitCode: firstResult.exitCode ?? null,
+        signal: firstResult.signal ?? null,
+        timings: firstResult.timings ?? null,
       };
     }
   }
@@ -298,6 +318,11 @@ export function runReviewPipeline({
       sessionId: firstResult.sessionId ?? null,
       truncationNotice,
       retryNotice,
+      // P1 additions: the FIRST call succeeded transport-wise; surface its
+      // timing even though the retry prompt build failed pre-spawn.
+      exitCode: firstResult.exitCode ?? null,
+      signal: firstResult.signal ?? null,
+      timings: firstResult.timings ?? null,
     });
   }
   const retryResult = callLLM({
@@ -318,6 +343,11 @@ export function runReviewPipeline({
       sessionId: (retryResult && retryResult.sessionId) ?? null,
       truncationNotice,
       retryNotice,
+      // P1 additions: retry-transport failure — pass the RETRY call's timing
+      // so observability reflects the most-recent spawn.
+      exitCode: (retryResult && retryResult.exitCode) ?? null,
+      signal: (retryResult && retryResult.signal) ?? null,
+      timings: (retryResult && retryResult.timings) ?? null,
     });
   }
 
@@ -333,6 +363,10 @@ export function runReviewPipeline({
       sessionId: retryResult.sessionId ?? null,
       truncationNotice,
       retryNotice,
+      // P1 additions: parse failed but retry spawn completed — keep its timing.
+      exitCode: retryResult.exitCode ?? null,
+      signal: retryResult.signal ?? null,
+      timings: retryResult.timings ?? null,
     });
   }
   const retryValidation = validateReviewOutput(retryExtracted.data);
@@ -346,6 +380,10 @@ export function runReviewPipeline({
       sessionId: retryResult.sessionId ?? null,
       truncationNotice,
       retryNotice,
+      // P1 additions: schema failed but retry spawn completed — keep its timing.
+      exitCode: retryResult.exitCode ?? null,
+      signal: retryResult.signal ?? null,
+      timings: retryResult.timings ?? null,
     });
   }
 
@@ -357,5 +395,9 @@ export function runReviewPipeline({
     retry_used: true,
     retry_notice: retryNotice,
     sessionId: retryResult.sessionId,
+    // P1 additions: success-after-retry surfaces the retry call's timing.
+    exitCode: retryResult.exitCode ?? null,
+    signal: retryResult.signal ?? null,
+    timings: retryResult.timings ?? null,
   };
 }
