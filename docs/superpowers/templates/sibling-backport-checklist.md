@@ -507,3 +507,78 @@ kimi's `gr-*/gt-*` migration note is kimi-specific history. Siblings never inher
 - [ ] `loadState` body contains ZERO references to `filterExpired` / `resolveTtlMs` (anti-regression — this was a v1-plan bug)
 
 Last updated: 2026-04-22, reflecting kimi-plugin-cc commit `v0.2-p3-polish` (P3 integration; supersedes Phase 5 and incorporates 6-way-review-approved design spec + 3-way-review-on-plan findings).
+
+---
+
+## P2 New Commands additions (2026-04-23)
+
+For siblings gemini-plugin-cc, minimax-plugin-cc, qwen-plugin-cc, and eventual doubao-plugin-cc:
+
+### P2-N1. Create `{plugin}/commands/continue.md` with `{plugin}:continue` naming
+
+**Action:** frontmatter `description`, `argument-hint: '<prompt>'`, `allowed-tools: Bash(node:*)`. Body: companion invocation + render rules (see `plugins/kimi/commands/continue.md` for template). Error-message mapping table follows §6.2 of kimi's spec.
+
+### P2-N2. Create `{plugin}/commands/resume.md` with `{plugin}:resume <sessionId> <prompt>`
+
+**Action:** same shape as continue.md, argument-hint `<sessionId> <prompt>`.
+
+### P2-N3. Create `{plugin}/scripts/lib/sessions.mjs`
+
+**Action:** mirror kimi's module structure but adapt to the plugin's upstream CLI conventions — must be probed separately (see P2-N5 below). Module exports:
+- `UUID_RE` — semi-strict 8-4-4-4-12 hex
+- `md5CwdPath(normalizedCwd)` — (may or may not apply to sibling CLIs)
+- `sanitizeForStderr(s)` — copy verbatim (provider-agnostic)
+- `SESSION_ERROR_REASONS` + `mapSessionReason(reason, ctx, options)` — reason keys may rename `kimi-json-*` → `{plugin}-config-*`; templates adapt to sibling's config-file path
+- `resolveContinueTarget(normalizedCwd, kaos)` — per-plugin config-file shape
+- `validateResumeTarget(normalizedCwd, sessionId)` — per-plugin session-dir layout
+
+### P2-N4. Remove `--resume` (or equivalent) from `{plugin}/commands/ask.md` if present
+
+**Sibling scan conducted 2026-04-22** — NONE of gemini / minimax / qwen ask.md had `--resume` at that time:
+- `/Users/bing/-Code-/gemini-plugin-cc/plugins/gemini/commands/ask.md` — no --resume
+- `/Users/bing/-Code-/minimax-plugin-cc/plugins/minimax/commands/ask.md` — no --resume
+- `/Users/bing/-Code-/qwen-plugin-cc/plugins/qwen/commands/ask.md` — explicitly "always a new conversation; resume via /qwen:rescue"
+
+Re-verify before claiming this step as no-op. If a sibling has since added it, remove as BREAKING with a CHANGELOG entry.
+
+### P2-N5. Probe upstream CLI's session semantics per-plugin
+
+Kimi's `kimi.json + work_dirs array + md5(realpath(cwd))/sessions/uuid/{context.jsonl,state.json,wire.jsonl}` layout is **kimi-cli-specific**. Sibling CLIs likely use different:
+- Config file name and path (e.g., `~/.gemini/` vs `~/.config/minimax/`)
+- Session storage scheme (may not use md5-of-path; may use SQLite; may store in single JSONL)
+- Resume flag name (Gemini has no `-r`; Qwen uses `/qwen:rescue --resume-last`)
+- Cross-cwd scoping (may not be cwd-scoped at all)
+
+Do NOT assume: the `~/.kimi/` dir path, md5 hashing, or the 3-file session layout. Each sibling plugin needs its own probe.
+
+### P2-N6. Ghost-session risk: probe whether the sibling CLI has a similar silent-session-creation bug
+
+kimi-cli 1.37's ghost behavior (probe v4 Q4.0) may or may not apply to sibling CLIs. Check each by the same throwaway-cwd + fabricated-UUID experiment. If the sibling CLI is safe against ghost, wrapper-side validation is still defensible as input-sanity hardening — but the "BREAKING: ghost-session hardened" CHANGELOG framing doesn't apply.
+
+### P2-N7. Companion `runContinue` / `runResume` helpers
+
+Mirror kimi's `plugins/kimi/scripts/kimi-companion.mjs` additions:
+- runContinue: rejects flags; resolves via `resolveContinueTarget` → validates via `validateResumeTarget` → calls the plugin's `call<LLM>` wrapper with `resumeSessionId` + `cwd: realCwd` + distinct timing kind; emits resume-mismatch warning on sessionId divergence.
+- runResume: same shape without the resolve step; accepts user-provided sessionId.
+- runAsk: reject `--resume` / `-r` / `--resume=<val>` explicitly at top (parseArgs does NOT error on unknown long flags). Remove `resume` from `valueOptions` + `aliasMap`.
+
+### P2-N8. Tests (mandatory)
+
+- `tests/sessions.test.mjs` unit suite — fakeHome + fakeHomeWithSession helpers are mostly portable; update config-file path + session-dir structure per sibling CLI. Expected ~30-50 cases covering all reasons.
+- `tests/commands-p2.test.mjs` integration — spawn-based (simpler than ESM mocks).
+- `tests/ask-no-resume-guard.test.mjs` — **mandatory** structural regression guard.
+
+### P2-N9. CHANGELOG BREAKING framing
+
+Only applicable if sibling had `--resume` on ask. Otherwise an "Added" entry only:
+- Added `/plugin:continue <prompt>` and `/plugin:resume <sessionId> <prompt>`.
+- Added `lib/sessions.mjs`.
+- probe-v4 findings committed.
+
+### P2-N10. lessons.md updates
+
+Each sibling's P2 closeout adds a subsection under §I.3 (or next §I.N) documenting its own decisions and deferred items. Cross-reference kimi's P2 closeout for shared design patterns.
+
+---
+
+Last updated: 2026-04-23, reflecting kimi-plugin-cc commit `v0.2-p2-new-commands` (P2 integration; supersedes P3 additions).
