@@ -4,3 +4,4 @@ node_modules/
 /tmp/
 plugins/kimi/scripts/*.tmp
 .claude/
+.worktrees/
