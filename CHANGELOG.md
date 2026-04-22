@@ -2,6 +2,38 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-22 [Claude Opus 4.7 + subagent-driven-development — v0.2 P1 Timing (shipped)]
+
+- **status**: shipped on `feat/v0.2-p1-timing` — spec `2f49340` v3 (`docs/superpowers/specs/2026-04-22-v0.2-p1-timing-design.md`), plan `3389d95` v2 (`docs/superpowers/plans/2026-04-22-v0.2-p1-timing-plan.md`), 12 tasks, 13 commits (T2 was 2 commits due to a mid-execution test-fix correction)
+- **scope**: 3-stage (cold / stream / tail) timing telemetry pipeline + `/kimi:timing` slash command with 4 modes; local ndjson log at `~/.kimi/plugin-cc/timings.ndjson`; cross-plugin schema-compatible-in-spirit with minimax's 3-term record (with documented envelope deltas)
+- **summary**:
+  - NEW `plugins/kimi/scripts/lib/timing.mjs` — `TimingAccumulator` (21-field `toJSON`) + `appendTimingHistory` / `loadTimingHistory` (inode-safe lock, crash recovery, truncated-line skip) + `filterHistory` + `percentile` + `computeAggregateStats` + 3 renderers (`renderSingleJobDetail` / `renderHistoryTable` / `renderAggregateTable`)
+  - NEW `plugins/kimi/scripts/lib/paths.mjs` helpers — `resolveTimingsFile` + `resolveTimingsLockFile`
+  - Extended 4 execution wrappers (`callKimi` sync + `callKimiStreaming` async + `callKimiReview` + `callKimiAdversarialReview`) + `runReviewPipeline` return-shape with `{ exitCode, signal, timings }` — bundled in T7
+  - 6 hook-points total: 1 background-worker terminal site (T8 — `runStreamingWorker`) + 5 foreground companion call-sites via `hookTimingForResult` helper (T9 — ask --stream, ask default, review, adversarial-review, task foreground)
+  - NEW `plugins/kimi/commands/timing.md` + `runTimingCommand` dispatcher with 4 modes: bare `/kimi:timing` (history table, last 20), `/kimi:timing --last` bare (most-recent detail), `/kimi:timing <jobId>` (specific-job detail), `/kimi:timing --stats` (aggregate p50/p95/p99 + slowest); `--kind` / `--since` filters shared with strict value validation
+  - T11: inline status-panel text-mode hint — `/kimi:timing --last` suggestion appended to completed-job status output. **NOTE**: Claude Code's `plugins/kimi/commands/status.md` passes `--json` by default so hint only surfaces on manual CLI (`node kimi-companion.mjs status`). Follow-up: update status.md to drop `--json` OR surface hint as a JSON field.
+  - NEW `tests/` directory + `tests/timing.test.mjs` (35 cases across 5 suites) + root `package.json` (zero-npm-dep preserved — just declares `"type": "module"` + `node --test` harness)
+  - `invariantKind: "3term"` discriminator in record envelope; cross-plugin schema delta from minimax documented in spec §3 honesty note (epoch-ms `spawnedAt` vs minimax's ISO; kimi adds `recordedAt` + `schemaVersion` envelope which minimax lacks)
+- **Verification**: `node --test tests/**/*.mjs` → 35 pass / 0 fail. Smoke tests per T7/T8/T9/T10/T11 verified {timings, exitCode, signal} populated, ndjson appends lock-safe, 11 timing-command paths (4 success + 7 error) exit correctly.
+- **Review cycles**:
+  - Spec: v1 → v2 (6-way: codex + gemini + kimi + qwen + minimax + claude-self; 37 findings integrated) → v3 (3-way round-2: codex + gemini-proxy-failed + claude-self; 5 findings applied). Commits `3e2fd07` / `0a9ff3e` / `2f49340`.
+  - Plan: v1 → v2 (3-way: codex + gemini + claude-self; 5 execution blockers + 4 MUST + 5 SHOULD applied). Commits `02bfc09` / `3389d95`.
+  - Code: subagent-driven-development — fresh implementer + fresh spec/quality reviewer per task.
+- **Task-commit map** (13 commits on `feat/v0.2-p1-timing`):
+  - T1 `ac5d615` paths helpers — T2 `ce9dbc0` + fix `82455d7` TimingAccumulator — T3 `3c7f00a` persistence + lock + load — T4 `8d37b5f` percentile + filter + stats — T5 `8bc598c` three renderers — T6 `55fc1c2` package.json — T7 `75c5060` wrappers extended + runReviewPipeline — T8 `c6b39b0` job-control terminal hook — T9 `7288d57` hookTimingForResult + 5 foreground sites — T10 `3283230` /kimi:timing command — T11 `420a70f` inline status-panel hint (text mode only)
+- **Deviations from plan**:
+  - T2 plan test #5 was arithmetically unreachable (closedAt drift propagates to tailMs preserving sum identity) — replaced with negative-interval probe (`82455d7`), categorized as plan-vs-reality correction caught by implementer self-review.
+  - `lib/render.mjs` planned as the hint-landing site in T11 — file never existed in this repo; rendering was inline in `kimi-companion.mjs::runJobStatus` (JSON-only prior). T11 added a text-mode renderer inline to enable the hint line.
+  - `callKimi` planned as async close-handler instrumentation — actually `spawnSync`-based; T7 Part B used synchronous pre-spawn/post-return timestamps instead.
+  - `bgWaitEntered` detection in v1 plan assumed `role === "notification"` — kimi-cli 1.37 events have no `role` field on Notification objects; swapped to heuristic `type/category` substring match (`backgroundtask`/`background`), pending probe-v5 confirmation.
+- **Conditional-defers registered** (lessons.md §I.3 P1 closeout):
+  - `KIMI_MAX_TIMING_BYTES` env (hidden, default 10 MB) — not promoted to public README; revisit if users request tuning.
+  - `bgWaitEntered` heuristic filter — requires probe-v5 to confirm real kimi-cli 1.37 BackgroundTask notification event shape.
+  - `/timed out waiting for background tasks/` regex inlined ~5× in kimi.mjs (not a module const) — noted as minor quality concern, not fixed in P1.
+  - T11 timing-hint line only reaches users via manual CLI; commands/status.md passes `--json` so Claude-Code-invoked status doesn't render the hint.
+- **next**: P2 new commands (`/kimi:continue`, `/kimi:resume`, etc.) per v0.2 roadmap; merge `feat/v0.2-p1-timing` → main (fast-forward or `--no-ff`). lessons.md §I.3 is the authoritative source for post-P1 deferred items.
+
 ## 2026-04-22 [Claude Opus 4.7 — v0.2 P1 T10: /kimi:timing command with 4 modes + parser edge validation]
 
 - **status**: done (1 commit on `feat/v0.2-p1-timing`; builds on T1-T9 timing pipeline — library, wrappers, hook sites)
