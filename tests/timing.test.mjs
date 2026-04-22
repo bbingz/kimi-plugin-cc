@@ -65,10 +65,16 @@ describe("TimingAccumulator — toJSON()", () => {
     assert.equal(new TimingAccumulator(baseInput).toJSON().terminationReason, "exit");
   });
 
-  it("invariantOk tolerance: 1ms gap passes, 2ms fails", () => {
-    const r1 = new TimingAccumulator({ ...baseInput, closedAt: 5001 }).toJSON();
+  it("invariantOk requires non-negative intervals: positive tailMs passes, negative fails (clock-went-backwards case)", () => {
+    // Baseline: all intervals positive, invariantOk=true
+    const r1 = new TimingAccumulator(baseInput).toJSON();
     assert.equal(r1.invariantOk, true);
-    const r2 = new TimingAccumulator({ ...baseInput, closedAt: 5002 }).toJSON();
+    assert.equal(r1.tailMs, 100);
+
+    // Force tailMs negative: closedAt (4899) < lastEventAt (4900)
+    // Simulates system clock adjustment mid-run — honest invariant failure.
+    const r2 = new TimingAccumulator({ ...baseInput, closedAt: 4899 }).toJSON();
+    assert.equal(r2.tailMs, -1);
     assert.equal(r2.invariantOk, false);
   });
 

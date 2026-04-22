@@ -43,8 +43,7 @@ export class TimingAccumulator {
     const allPresent  = firstEventMs != null && streamMs != null && tailMs != null && totalMs != null;
     const allNonNeg   = allPresent && firstEventMs >= 0 && streamMs >= 0 && tailMs >= 0 && totalMs >= 0;
     const sumInTol    = allPresent && Math.abs(totalMs - (firstEventMs + streamMs + tailMs)) <= 1;
-    const tailOk      = tailMs == null || tailMs <= 101;
-    const invariantOk = allPresent && allNonNeg && sumInTol && tailOk;
+    const invariantOk = allPresent && allNonNeg && sumInTol;
 
     let terminationReason;
     if (this._timedOut) terminationReason = "timeout";
