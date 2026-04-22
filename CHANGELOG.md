@@ -2,6 +2,15 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-22 [Claude Opus 4.7 — v0.2 P3 Task 5 (C8): maxDiffChars parameterization in runReviewPipeline]
+
+- **status**: done (Task 5 of 11 in v0.2 P3 polish batch, executed in worktree `feat/v0.2-p3-polish`)
+- **scope**: `plugins/kimi/scripts/lib/review.mjs`, `CHANGELOG.md`
+- **summary**: added `maxDiffChars` as explicit pipeline parameter to `runReviewPipeline`, defaulting to `MAX_REVIEW_DIFF_BYTES`. `truncationNotice`'s default now derives from `maxDiffChars` via `formatTruncationNotice(maxDiffChars)` — sibling plugins passing a different budget get a correctly-sized user-facing notice without copy-pasting the template. Destructuring order corrected (`maxDiffChars` inserted BEFORE `truncationNotice` so left-to-right default derivation works). Existing constant name `MAX_REVIEW_DIFF_BYTES` preserved for back-compat; added a clarifying comment that the measurement is JS string length (UTF-16 code units, i.e. chars, NOT UTF-8 bytes) — companion's truncation check uses `context.content.length` at kimi-companion.mjs:~417 and ~:534. Block-comment `maxDiffBytes` → `maxDiffChars` rename landed at 2 sites (header override docs + pipeline signature docs); constant comment is the only new prose.
+- **why not rename the constant**: internal-only name (consumers: `review.mjs:23` derives TRUNCATION_NOTICE; `kimi.mjs:10,19` re-exports). Renaming would churn 2 more files outside T5's scope. Honest naming on the new PARAM (`maxDiffChars`) + clarifying comment on the OLD CONSTANT solves the 3-way-review MEDIUM naming finding without widening scope. A future refactor can rename when those consumers are independently touched.
+- **verifications**: `node --check` clean · `formatTruncationNotice(MAX_REVIEW_DIFF_BYTES).includes('150 KB')` → `true` · `formatTruncationNotice(16_000).includes('16 KB')` → `true` · `runReviewPipeline({maxDiffChars: 16_000, ...stub})` does not throw; returns `{ok:false}` (stub fails callLLM as expected); `r.truncation_notice` empty because stub doesn't trigger truncation — key outcome is no throw on new param.
+- **next**: remaining P3 tasks per plan (6/7/9/10/11).
+
 ## 2026-04-22 [Claude Opus 4.7 — v0.2 P3 Task 4 (C4): runLLM seam via dispatchStreamWorker injection]
 
 - **status**: done (Task 4 of 11 in v0.2 P3 polish batch, executed in worktree `feat/v0.2-p3-polish`)

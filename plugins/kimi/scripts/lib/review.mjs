@@ -8,10 +8,16 @@ import { errorResult } from "./errors.mjs";
 // Diff budget for any review pipeline. Current prompts leave margin for the
 // schema block, summary, and focus line so the full request stays under a
 // conservative ceiling. Callers can override via `runReviewPipeline`'s
-// `maxDiffBytes` / `truncationNotice` / `retryNotice` options when the
+// `maxDiffChars` / `truncationNotice` / `retryNotice` options when the
 // provider has a smaller context window (gemini 5-way-review H3 +
 // qwen 5-way-review M1): sibling plugins with a 32k-context model would
 // otherwise hard-fail on 150 KB diffs.
+//
+// Name kept for back-compat. NB: measurement is JS string length
+// (UTF-16 code units, i.e. chars, NOT UTF-8 bytes). The companion's
+// truncation check uses `context.content.length` at ~kimi-companion.mjs:417
+// and ~:534. New callers / sibling plugins should think in "chars";
+// a fresh refactor can rename when the existing consumers are touched.
 export const MAX_REVIEW_DIFF_BYTES = 150_000;
 
 // Render-layer notices. These strings flow through JSON fields that command
@@ -208,7 +214,7 @@ export function reviewError({
 // this module get the same observability breadcrumb; callers can override
 // (or pass null to suppress) if they need a provider-specific label.
 // `truncationNotice` / `retryNotice` overrides let sibling plugins with a
-// different `maxDiffBytes` budget emit a matching user-facing note
+// different `maxDiffChars` budget emit a matching user-facing note
 // (gemini 5-way-review H3 + qwen 5-way-review M1). Defaults mirror the
 // exported `TRUNCATION_NOTICE` / `RETRY_NOTICE` constants.
 export function runReviewPipeline({
@@ -217,7 +223,8 @@ export function runReviewPipeline({
   model = null, cwd = process.cwd(), timeout,
   truncated = false,
   retryWarning = "Warning: review response failed parse/validation; retrying once with error hint...\n",
-  truncationNotice = TRUNCATION_NOTICE,
+  maxDiffChars = MAX_REVIEW_DIFF_BYTES,
+  truncationNotice = formatTruncationNotice(maxDiffChars),
   retryNotice = RETRY_NOTICE,
 } = {}) {
   let firstPrompt;
