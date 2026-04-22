@@ -448,7 +448,7 @@ function describeKimiExit({ status, stdout, stderr }) {
 // Returns events + partialResponse derived from stdout parse — that's why
 // this can't be replaced by the canonical errorResult from ./errors.mjs.
 // Kept local; callers within this file reference it by the new name.
-function streamErrorResult({ status, error, stdout, events, textParts }) {
+function streamErrorResult({ status, error, stdout, events, textParts, exitCode, signal, timings }) {
   const partialEvents = events ?? (stdout ? parseKimiStdout(stdout).events : []);
   const partialText = textParts
     ? textParts.join("")
@@ -459,6 +459,11 @@ function streamErrorResult({ status, error, stdout, events, textParts }) {
     status: status ?? null,
     partialResponse: partialText || null,
     events: partialEvents,
+    // P1 additions (Task 7): propagate transport-layer timing / exit signals
+    // through error paths so render / history layers see a uniform shape.
+    exitCode: exitCode ?? null,
+    signal: signal ?? null,
+    timings: timings ?? null,
   };
 }
 
@@ -475,7 +480,9 @@ export function callKimi({
   // return is a superset of `streamErrorResult`. Downstream readers expecting
   // `partialResponse`/`events` on any non-ok callKimi return don't see
   // undefined on the oversize path.
-  if (guardResult) return { ...guardResult, partialResponse: null, events: [] };
+  // P1 T7: extend with null {exitCode, signal, timings} — spawn never happened
+  // so there's nothing to time.
+  if (guardResult) return { ...guardResult, partialResponse: null, events: [], exitCode: null, signal: null, timings: null };
 
   // ── Pre-flight (codex C2) ──
   // Validate requested model against ~/.kimi/config.toml [models.*] BEFORE
@@ -485,6 +492,7 @@ export function callKimi({
   if (model) {
     const configured = readKimiConfiguredModels();
     if (configured.length > 0 && !configured.includes(model)) {
+      // Pre-flight rejection — spawn never happened, timings stay null.
       return streamErrorResult({
         status: KIMI_EXIT.CONFIG_ERROR,
         error: `Model '${model}' is not configured in ~/.kimi/config.toml. Available: ${configured.join(", ")}`,
@@ -496,24 +504,48 @@ export function callKimi({
   const useStdinForPrompt = (prompt || "").length >= LARGE_PROMPT_THRESHOLD_BYTES;
   const args = buildKimiArgs({ prompt, model, useStdinForPrompt, resumeSessionId, extraArgs });
 
+  // P1 T7 Part B: sync timing. spawnSync is opaque — we can't see firstEventAt
+  // intra-stream, so we approximate as closedAt when events exist (lossy but
+  // consistent with spec §3.3 sync-wrapper contract).
+  const spawnedAt = Date.now();
   const result = runCommand(KIMI_BIN, args, {
     cwd,
     timeout,
     input: useStdinForPrompt ? prompt : undefined,
   });
+  const closedAt = Date.now();
+  const stderrText = result?.stderr?.toString?.() ?? "";
+  const timedOut = /timed out waiting for background tasks/.test(stderrText);
 
   if (result.error) {
-    return streamErrorResult({ error: result.error.message, events: [] });
+    return streamErrorResult({
+      error: result.error.message,
+      events: [],
+      exitCode: result.status ?? null,
+      signal: result.signal ?? null,
+      timings: { spawnedAt, firstEventAt: null, lastEventAt: null, closedAt, timedOut, bgWaitEntered: false },
+    });
   }
 
   // Map signaled exits (status=null + signal=SIGINT/SIGTERM) back to 130/143
   // so describeKimiExit + caller's process.exit() preserve POSIX semantics.
   const effectiveStatus = result.status ?? statusFromSignal(result.signal);
   if (effectiveStatus !== 0) {
+    // Best-effort bgWait heuristic from partial parse (non-ok exit may still
+    // have emitted events). Mirrors the streaming-path heuristic.
+    const { events: partialEvents = [] } = parseKimiStdout(result.stdout || "");
+    const bgWaitEntered = partialEvents.some(
+      (e) => String(e?.type || "").toLowerCase().includes("backgroundtask") ||
+             String(e?.category || "").toLowerCase().includes("background")
+    );
+    const firstEventAt = partialEvents.length > 0 ? closedAt : null;
     return streamErrorResult({
       status: effectiveStatus,
       error: describeKimiExit({ ...result, status: effectiveStatus }),
       stdout: result.stdout,
+      exitCode: result.status ?? null,
+      signal: result.signal ?? null,
+      timings: { spawnedAt, firstEventAt, lastEventAt: firstEventAt, closedAt, timedOut, bgWaitEntered },
     });
   }
 
@@ -527,6 +559,15 @@ export function callKimi({
   //   (c) Exit 0 + whitespace     (e.g. only "   \n" — visually empty to user)
   //   (d) Exit 0 + malformed JSONL (corrupted stream — codex Phase-5 H3)
   //   (e) Exit 0 + only system events (codex 5-way-review L2)
+  // P1 T7: bgWait + firstEventAt approximation for the sync path (shared
+  // by the no-visible-text error return and the ok:true return below).
+  const bgWaitEntered = events.some(
+    (e) => String(e?.type || "").toLowerCase().includes("backgroundtask") ||
+           String(e?.category || "").toLowerCase().includes("background")
+  );
+  const firstEventAt = events.length > 0 ? closedAt : null;
+  const lastEventAt = firstEventAt;
+
   if (!assistantText.trim()) {
     const malformedNote = malformedCount > 0
       ? ` (and ${malformedCount} malformed JSONL line${malformedCount > 1 ? "s" : ""} silently dropped)`
@@ -546,6 +587,10 @@ export function callKimi({
       thinkBlocks: countThinkBlocks(events),
       malformedCount,
       unexpectedRoleCount,
+      // P1 additions:
+      exitCode: result.status ?? null,
+      signal: result.signal ?? null,
+      timings: { spawnedAt, firstEventAt, lastEventAt, closedAt, timedOut, bgWaitEntered },
     };
   }
 
@@ -568,6 +613,10 @@ export function callKimi({
     toolEvents,
     thinkBlocks: countThinkBlocks(events),
     malformedCount,
+    // P1 additions:
+    exitCode: result.status ?? null,
+    signal: result.signal ?? null,
+    timings: { spawnedAt, firstEventAt, lastEventAt, closedAt, timedOut, bgWaitEntered },
   };
 }
 
@@ -588,7 +637,7 @@ export function callKimiStreaming({
   const guardResult = checkPromptSize(prompt, { kind: "task", label: "task" });
   // T6 I-1: same shape-merge as callKimi — guard return becomes a superset of
   // streamErrorResult so streaming consumers see `partialResponse`/`events`.
-  if (guardResult) return Promise.resolve({ ...guardResult, partialResponse: null, events: [] });
+  if (guardResult) return Promise.resolve({ ...guardResult, partialResponse: null, events: [], exitCode: null, signal: null, timings: null });
 
   // Pre-flight model check, same as callKimi (codex C2).
   if (model) {
@@ -604,6 +653,19 @@ export function callKimiStreaming({
 
   const useStdinForPrompt = (prompt || "").length >= LARGE_PROMPT_THRESHOLD_BYTES;
   const args = buildKimiArgs({ prompt, model, useStdinForPrompt, resumeSessionId, extraArgs });
+
+  // P1 T7 Part A: timing state. `spawnedAt` captured BEFORE the spawn() call
+  // so it reflects our intent to launch (not post-fork clock). `firstEventAt`
+  // / `lastEventAt` stamped on each successful event push in processLine.
+  // `bgWaitEntered` is a heuristic (spec B3) — kimi-cli 1.37 Notification /
+  // BackgroundTask envelopes surface via top-level `type` / `category`
+  // fields; the substring match will yield 0 true events if the actual
+  // runtime strings differ, which is a safe default pending probe-v5
+  // confirmation.
+  const spawnedAt = Date.now();
+  let firstEventAt = null;
+  let lastEventAt = null;
+  let bgWaitEntered = false;
 
   return new Promise((resolve) => {
     const child = spawn(KIMI_BIN, args, {
@@ -647,6 +709,19 @@ export function callKimiStreaming({
       }
       const ev = result.event;
       events.push(ev);
+      // P1 T7 Part A: stamp event timings + bgWait heuristic immediately
+      // after the successful push. Closure-captured from the outer function
+      // scope (declared above `new Promise(...)`). See spec B3 for the
+      // heuristic's safe-default rationale.
+      if (firstEventAt == null) firstEventAt = Date.now();
+      lastEventAt = Date.now();
+      if (
+        !bgWaitEntered &&
+        (String(ev?.type || "").toLowerCase().includes("backgroundtask") ||
+         String(ev?.category || "").toLowerCase().includes("background"))
+      ) {
+        bgWaitEntered = true;
+      }
       if (ev.role === "assistant") {
         const t = extractAssistantText(ev);
         if (t) textParts.push(t);
@@ -688,6 +763,10 @@ export function callKimiStreaming({
           error: `kimi timed out after ${Math.round(timeout / 1000)}s`,
           events,
           textParts,
+          // P1 additions: stamp closedAt now; timedOut=true always here.
+          exitCode: status ?? null,
+          signal: signal ?? null,
+          timings: { spawnedAt, firstEventAt, lastEventAt, closedAt: Date.now(), timedOut: true, bgWaitEntered },
         }));
         return;
       }
@@ -702,6 +781,17 @@ export function callKimiStreaming({
           error: describeKimiExit({ status: effectiveStatus, stdout: textParts.join(""), stderr: stderrBuf }),
           events,
           textParts,
+          // P1 additions:
+          exitCode: status ?? null,
+          signal: signal ?? null,
+          timings: {
+            spawnedAt,
+            firstEventAt,
+            lastEventAt,
+            closedAt: Date.now(),
+            timedOut: /timed out waiting for background tasks/.test(stderrBuf || ""),
+            bgWaitEntered,
+          },
         }));
         return;
       }
@@ -734,6 +824,17 @@ export function callKimiStreaming({
           thinkBlocks: countThinkBlocks(events),
           malformedCount,
           unexpectedRoleCount,
+          // P1 additions: the spawn succeeded (exit 0) but produced no text.
+          exitCode: status ?? null,
+          signal: signal ?? null,
+          timings: {
+            spawnedAt,
+            firstEventAt,
+            lastEventAt,
+            closedAt: Date.now(),
+            timedOut: /timed out waiting for background tasks/.test(stderrBuf || ""),
+            bgWaitEntered,
+          },
         });
         return;
       }
@@ -751,6 +852,9 @@ export function callKimiStreaming({
         parseSessionIdFromStderr(stderrBuf) ||
         readSessionIdFromKimiJson(cwd || process.cwd());
 
+      // P1 T7 Part A: success resolve extends with timings + exitCode + signal.
+      // closedAt stamped here; timedOut sourced from stderr scan for the
+      // kimi-cli 1.37 "timed out waiting for background tasks" marker.
       resolve({
         ok: true,
         response: textParts.join(""),
@@ -759,12 +863,41 @@ export function callKimiStreaming({
         toolEvents,
         thinkBlocks: countThinkBlocks(events),
         malformedCount,
+        // P1 additions:
+        exitCode: status ?? null,
+        signal: signal ?? null,
+        timings: {
+          spawnedAt,
+          firstEventAt,
+          lastEventAt,
+          closedAt: Date.now(),
+          timedOut: /timed out waiting for background tasks/.test(stderrBuf || ""),
+          bgWaitEntered,
+        },
       });
     });
 
     child.on("error", (err) => {
       clearTimeout(timer);
-      resolve(streamErrorResult({ error: err.message, events, textParts }));
+      // P1 additions: spawn-level errors — status/signal unknown at this
+      // level (child.on("error") fires for ENOENT / EACCES before close
+      // emits), so propagate null. closedAt = now; timedOut falsy unless
+      // stderr already mentioned the bg-tasks marker.
+      resolve(streamErrorResult({
+        error: err.message,
+        events,
+        textParts,
+        exitCode: null,
+        signal: null,
+        timings: {
+          spawnedAt,
+          firstEventAt,
+          lastEventAt,
+          closedAt: Date.now(),
+          timedOut: /timed out waiting for background tasks/.test(stderrBuf || ""),
+          bgWaitEntered,
+        },
+      }));
     });
   });
 }

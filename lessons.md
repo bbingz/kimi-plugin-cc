@@ -411,6 +411,43 @@ These supersessions are **improvements on the spec, not violations of it**. Spec
 - New supersession? Add to S-rows whenever a plan execution chose different-from-spec-but-equivalent-outcome for code-level reasons. Future AIs forking kimi can see exactly where spec and implementation diverged and why.
 - Resolving one? Strike through the row + note the commit SHA that closed it. Do not delete rows — the "why we waited" history is load-bearing for future judgment calls on whether to revisit or defer again.
 
+### I.3 Phase-level closeouts
+
+#### P1 — v0.2 Timing (2026-04-22)
+
+**Ship-state**: `feat/v0.2-p1-timing`. 12 tasks (13 commits — T2 had a +1 mid-execution test-case correction). Plan: `docs/superpowers/plans/2026-04-22-v0.2-p1-timing-plan.md` (v2, `3389d95`). Spec: `docs/superpowers/specs/2026-04-22-v0.2-p1-timing-design.md` (v3, `2f49340`).
+
+**Review cycles**:
+- Spec: v1 → v2 (6-way: codex + gemini + kimi + qwen + minimax + claude-self; 37 findings) → v3 (3-way round-2: codex + gemini (proxy-failed) + claude-self; 5 findings). Commits `3e2fd07` / `0a9ff3e` / `2f49340`.
+- Plan: v1 → v2 (3-way: codex + gemini + claude-self; 5 execution blockers + 4 MUST + 5 SHOULD). Commits `02bfc09` / `3389d95`.
+- Code: subagent-driven-development, fresh implementer + spec/quality reviewer per task.
+
+**Key realizations**:
+- kimi 1.37 does not surface per-model usage (JsonPrinter drops StatusUpdate; TokenUsage has no model field). Forced the 3-stage subset of minimax's 3-term schema. See `doc/probe/probe-results-v4.json` Q1.
+- `/kimi:ask` default path uses `callKimi` (SYNCHRONOUS, `spawnSync`-based), not `callKimiStreaming`. Symmetric extension of both was required (caught at plan round-2).
+- `bgWaitEntered` detection via stdout heuristic on `type` / `category` fields (NOT `role` — that was v1's wrong guess). Heuristic pending probe-v5 confirmation.
+- `lib/render.mjs` does not exist in P3 baseline (spec §1 table error); status-panel hint landed inline in `kimi-companion.mjs::runJobStatus` (new text-mode renderer added since prior code was JSON-only).
+- Cross-plugin schema parity with minimax is aspirational, not strict: we emit `spawnedAt` as epoch ms (minimax uses ISO); we add `recordedAt` + `schemaVersion` envelope (minimax has neither). Follow-up on minimax side.
+- Plan test #5 in T2 was arithmetically unreachable (closedAt drift propagates to tailMs preserving sum identity); replaced with negative-interval test (commit `82455d7`). Category: plan-vs-reality correction caught by implementer self-review.
+
+**Conditional-defers registered**:
+
+| # | Item | Trigger to revisit | Current state |
+|---|---|---|---|
+| D6 | `KIMI_MAX_TIMING_BYTES` env (hidden, default 10 MB) — not promoted to public README | If a user reports ndjson growth pain or requests a tuning knob | Hidden env introduced in T3. Real-world record size + append rate unknown; exposing the knob prematurely would require documenting rotation semantics we have not specified. |
+| D7 | `bgWaitEntered` heuristic (`type` / `category` substring match on `backgroundtask` / `background`) | Probe-v5 confirms real kimi-cli 1.37 BackgroundTask notification event shape | Current heuristic is a best-guess based on v1.36 naming conventions + Go-style event-bus taxonomy. May yield 0 true hits under current runtime. Not a correctness blocker for P1 because the field is diagnostic-only (doesn't affect invariant checks). |
+| D8 | `/timed out waiting for background tasks/` regex inlined ~5× across `kimi.mjs` | Any future edit that touches the timeout-detection path | Minor code-quality concern: should be a module-const regex. Noted in T7 implementer self-review, not fixed in P1 to keep T7 patch small. Trivial mechanical refactor. |
+| D9 | T11 timing-hint line only reaches users via manual CLI; `commands/status.md` passes `--json` by default | User friction report OR when building P2 new-commands batch | Two resolution paths: (a) drop `--json` from `status.md` and rely on text renderer; (b) add `timingHint` field to JSON envelope and render in Claude Code's display layer. Path (b) is cleaner but requires upstream render-side change. |
+
+### Plan-vs-reality supersessions (not deferred, but worth the note)
+
+| # | Plan said | Execution did | Why |
+|---|---|---|---|
+| S4 | T2 test #5: assert `invariant.diff` within tolerance after adjusting `closedAt` | Replaced with negative-interval probe (tailMs < 0 → invariantOk false) | Arithmetic identity: because tailMs is COMPUTED as `closedAt - lastEventAt`, shifting closedAt propagates proportionally into tailMs — the 4-term sum invariant (cold + stream + tail = total) is preserved by construction. Plan's "drift tolerance" test could never fail. Fix commit: `82455d7`. |
+| S5 | T11 landed in hypothetical `lib/render.mjs` | Added text-mode renderer inline at `kimi-companion.mjs::runJobStatus` | `lib/render.mjs` never existed in P3 baseline (spec §1 table had a gap). Prior `runJobStatus` was JSON-only; text mode added in T11 precisely to host the hint line. |
+| S6 | T7 Part B: instrument `callKimi` via async close-handler | Used synchronous pre-spawn / post-return timestamps | `callKimi` is `spawnSync`-based — no close handler exists to hook. `firstEventAt = lastEventAt = closedAt` when events emitted (lossy but honest — sync path can't see intra-stream timing); `null` when 0 events. |
+| S7 | Detect `bgWaitEntered` via `role === "notification"` | Heuristic on `type` / `category` substrings (`backgroundtask` / `background`) | kimi-cli 1.37 Notification events have no `role` field — they're a distinct pydantic model at the transport layer. Guess v1 was wrong; switched to string-search on type/category. Pending probe-v5 to lock actual field names. |
+
 ---
 
 ## Appendix I: Kimi's actual checklist answers (gemini Phase-5-plan G5)

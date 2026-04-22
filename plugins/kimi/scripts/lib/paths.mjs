@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 
 // Realpath-normalize cwd so spawn and session-id lookup hash to the
 // same workspace slug regardless of /tmp → /private/tmp symlinks on
@@ -13,4 +15,12 @@ export function resolveRealCwd(cwd) {
   } catch {
     return cwd;
   }
+}
+
+export function resolveTimingsFile() {
+  return path.join(os.homedir(), ".kimi", "plugin-cc", "timings.ndjson");
+}
+
+export function resolveTimingsLockFile() {
+  return path.join(os.homedir(), ".kimi", "plugin-cc", "timings.ndjson.lock");
 }

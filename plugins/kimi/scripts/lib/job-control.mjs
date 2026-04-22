@@ -16,6 +16,7 @@ import {
   upsertJob,
   writeJobFile,
 } from "./state.mjs";
+import { appendTimingHistory, TimingAccumulator } from "./timing.mjs";
 
 // ── Constants ────────────────────────────────────────────
 
@@ -202,6 +203,9 @@ export function runWorker(jobId, workspaceRoot, companionScript, args) {
   }
 
   console.log(`\n[${now}] Job ${jobId} ${status} (exit ${exitCode})`);
+  if (status === "completed") {
+    console.log(`  → /kimi:timing --last   for timing breakdown`);
+  }
 }
 
 /**
@@ -286,6 +290,21 @@ export async function runStreamingWorker(jobId, workspaceRoot, config) {
       completedAt: now,  // C6: TTL filter keys off this
     });
   });
+
+  // P1 hook: persist timing record (outside state.json.lock)
+  try {
+    const accum = new TimingAccumulator({
+      ...(result?.timings ?? {}),
+      exitCode: result?.exitCode ?? null,
+      signal:   result?.signal ?? null,
+      prompt:   config?.prompt ?? "",
+      response: result?.ok ? (result.response ?? "") : (result?.partialResponse ?? ""),
+      requestedModel: config?.model ?? null,
+    });
+    appendTimingHistory(jobId, config?.kind ?? "task", accum.toJSON());
+  } catch (err) {
+    try { process.stderr.write(`[timing] append failed for ${jobId}: ${err.message}\n`); } catch {}
+  }
 
   appendLog(`Job ${jobId} ${status}`);
 }
