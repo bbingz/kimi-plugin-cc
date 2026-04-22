@@ -381,10 +381,23 @@ async function runResume(rawArgs) {
 }
 
 async function runAsk(rawArgs) {
+  // v0.2 P2 BREAKING: /kimi:ask --resume / -r removed. Explicit rejection —
+  // parseArgs does NOT error on unknown long flags (they fall into positionals),
+  // so without this, `--resume <uuid>` would silently be prompt tokens.
+  // Use /kimi:resume <sessionId> <prompt> instead.
+  for (const a of rawArgs) {
+    if (a === "--resume" || a === "-r" || (typeof a === "string" && a.startsWith("--resume="))) {
+      process.stderr.write(
+        `Error: '${a}' — /kimi:ask --resume / -r has been removed (v0.2 P2 BREAKING). Use /kimi:resume <sessionId> <prompt> instead.\n`
+      );
+      process.exit(KIMI_EXIT.USAGE_ERROR);
+    }
+  }
+
   const { options, positionals } = parseArgs(rawArgs, {
-    valueOptions: ["model", "resume"],
+    valueOptions: ["model"],
     booleanOptions: ["json", "stream"],
-    aliasMap: { m: "model", r: "resume" },
+    aliasMap: { m: "model" },
   });
 
   // Reject "-X=value" short-form flags (codex v3-review A3). parseArgs
@@ -403,7 +416,7 @@ async function runAsk(rawArgs) {
   const prompt = positionals.join(" ").trim();
   if (!prompt) {
     process.stderr.write(
-      "Error: /kimi:ask requires a prompt.\nUsage: kimi-companion ask [--json] [-m <model>] [-r <sid>] \"<prompt>\"\n"
+      "Error: /kimi:ask requires a prompt.\nUsage: kimi-companion ask [--json] [-m <model>] \"<prompt>\"\n"
     );
     process.exit(KIMI_EXIT.USAGE_ERROR);
   }
@@ -423,7 +436,9 @@ async function runAsk(rawArgs) {
   const callArgs = {
     prompt,
     model: options.model || null,
-    resumeSessionId: options.resume || null,
+    // v0.2 P2 BREAKING: /kimi:ask no longer accepts resumeSessionId.
+    // Resume paths go through /kimi:continue or /kimi:resume (separate
+    // subcommands with wrapper-side pre-validation).
     // Realpath so spawn-cwd and the post-call `readSessionIdFromKimiJson`
     // lookup use the same string form (see resolveRealCwd above).
     cwd: resolveRealCwd(process.cwd()),
@@ -447,7 +462,7 @@ async function runAsk(rawArgs) {
     };
     if (result.ok && !result.sessionId) {
       process.stderr.write(
-        "Warning: session_id could not be captured. --resume will not work for this call.\n"
+        "Warning: session_id could not be captured. /kimi:resume will not work for this call.\n"
       );
     }
     process.stdout.write(JSON.stringify(summary) + "\n");
@@ -470,7 +485,7 @@ async function runAsk(rawArgs) {
   if (options.json) {
     if (result.ok && !result.sessionId) {
       process.stderr.write(
-        "Warning: session_id could not be captured. --resume will not work for this call.\n"
+        "Warning: session_id could not be captured. /kimi:resume will not work for this call.\n"
       );
     }
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
@@ -490,37 +505,14 @@ async function runAsk(rawArgs) {
     // but if it does we want the user to know --resume won't work.
     if (!result.sessionId) {
       process.stderr.write(
-        "Warning: session_id could not be captured. --resume will not work for this call.\n"
+        "Warning: session_id could not be captured. /kimi:resume will not work for this call.\n"
       );
     }
   }
-  // Resume-mismatch warning (gemini Phase-2-review G-H1): kimi 1.36 silently
-  // ignores a bogus or expired -r <sid> and mints a fresh session (Task 2.7
-  // Step 6 "reverse WARN" documented this). When the user explicitly asked to
-  // resume a specific sid but got a different one back, flag it — otherwise
-  // they'd see a valid-looking footer and assume their context carried over.
-  // Post-5-way-review: exit non-zero (qwen M3) so Claude's render layer
-  // surfaces the mismatch as a "something went wrong" signal rather than
-  // quietly succeeding — the answer is valid but the continuity contract
-  // the user asked for is broken.
-  let resumeMismatched = false;
-  if (callArgs.resumeSessionId && result.ok && result.sessionId &&
-      result.sessionId !== callArgs.resumeSessionId) {
-    process.stderr.write(
-      `Warning: requested --resume ${callArgs.resumeSessionId} did not match returned session ${result.sessionId}; kimi likely started a fresh session and prior context was not carried over.\n`
-    );
-    resumeMismatched = true;
-  }
-  // Propagate kimi's original exit status (codex C4) so callers can distinguish
-  // config vs usage vs signal causes. result.status is null on success paths.
-  // Resume-mismatch on an otherwise-ok run → exit 1 (qwen 5-way-review M3):
-  // stdout/response stays intact so user sees kimi's answer; exit code signals
-  // the session-continuity contract failed so Claude renders a visible note.
-  process.exit(
-    result.ok
-      ? (resumeMismatched ? 1 : KIMI_EXIT.OK)
-      : (result.status ?? 1)
-  );
+  // v0.2 P2: resume-mismatch protection moved to runContinue/runResume
+  // (the only paths that now request a specific session). /kimi:ask always
+  // starts fresh, so no mismatch is possible.
+  process.exit(result.ok ? KIMI_EXIT.OK : (result.status ?? 1));
 }
 
 // One-line footer appended to /kimi:ask text output. Keep short — it's
