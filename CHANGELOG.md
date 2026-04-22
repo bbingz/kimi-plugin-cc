@@ -2,6 +2,42 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-22 [Claude Opus 4.7 — v0.2 P3 polish-batch design spec (v2 post-6-way-review)]
+
+- **status**: done (spec only; implementation plan next via `superpowers:writing-plans`)
+- **scope**: docs/superpowers/specs/2026-04-22-v0.2-p3-polish-design.md (NEW, 576L), CHANGELOG.md
+- **summary**: brainstormed v0.2's ~20-item backlog → 4 sub-projects (P1 Timing / P2 New Commands / P3 Polish / P4 Docs). User chose P3 first per "clear-backpack" ordering. Triage kept 8 of 10 polish items (C1-C8), dropped C9 (PID birth-time, YAGNI) and C10 (Windows+NFS, out of macOS scope). Drafted v1 spec → ran **6-way review** (codex + gemini + kimi + qwen + minimax + Claude-self with live probes) → 14 findings integrated (10 must-fix + 4 should-fix). V1 verdict was 3/5 SHIP: no; v2 addresses every CRITICAL and all convergent findings.
+- **6-way review convergent findings**:
+  - **CRITICAL** C4 "byte-for-byte sibling copy" claim false (codex-H2 + gemini-C1 + minimax-H1, 3×): `job-control.mjs` has 19 residual kimi strings after C4's proposed change. V2 walks back claim to honest "structurally identical + 3 rename targets" (SESSION_ID_ENV, KIMI_STATUS_TIMED_OUT, kimiSessionId). `sibling-backport-checklist.md` Post-P3 section becomes required P3 deliverable.
+  - **CRITICAL** §I.2 referenced but not created (qwen-C1 + minimax-L1, 2×): V2 explicitly marks "new section to create" + lists 4 deferrals (runStreamingWorker crash window, C4 rename targets, C5 status read-only gap, SessionEnd via-updateState migration).
+  - **HIGH** TTL in `loadState` unsafe under unlocked RMW in `session-lifecycle-hook.mjs:73-86` (codex-H1 + gemini-M1, 2×): V2 splits — loadState returns filtered view only (no disk write), physical purge moved inside `updateState`'s lock.
+  - **HIGH** Sibling templates stale post-P3 (minimax-H2 + qwen-M5, 2×): V2 §6.4 + §6.5 require updates to `phase-1-template.md` T.6 + `sibling-backport-checklist.md` Post-P3 section.
+- **Other CRITICAL integrations**:
+  - C7 commit SHA corrected: `54f2fd0` → `aa0bde6` (kimi-C1, git log confirmed)
+  - C1 `resolveWorkspaceRoot` location fixed: lives in 3 hook/companion files, NOT job-control.mjs (kimi-C2)
+  - C6 verification extended to 4 edge cases (TTL=1 / TTL=0 escape / invalid env stderr / physical purge on updateState) per qwen-C2
+- **HIGH integrations**:
+  - C3 rationale rewritten: v1's "E2BIG/ARG_MAX" framing was technically wrong (stdin has no ARG_MAX limit; probe-results.json v3 confirms kimi uses stdin). V2: "defensive cap until kimi's real stdin ceiling is probed" (codex-H3)
+  - C3 return shape gains `kind` field matching C2 errorResult (qwen-H1)
+  - §5 decision log each point gains 1-2 line rationale + rejected alternatives (qwen-H2)
+  - C1 call-sites: 4 exact line numbers in kimi-companion.mjs (kimi-H3)
+  - C6 line-ref: function at :66, filter statement at :85 (kimi-H4)
+- **MEDIUM integrations**:
+  - C8 parameter renamed `maxDiffBytes` → `maxDiffChars` (codex-M2): measurement is JS string length, not UTF-8 bytes; constant name kept for back-compat + clarifying comment
+  - C5 scope narrowed: delivers "testable isolation" not "read-only status"; full decoupling deferred to §I.2 (codex-M1)
+- **Structural additions in v2**:
+  - New §8 audit trail table: 14 findings → v2 revisions mapping
+  - §5 Decision log gains Decision 7 recording the "全部修" choice post-6-way-review
+  - §1 files-touched adds `docs/superpowers/templates/` module (2 template files required)
+- **Deferrals explicitly recorded in §I.2 (created during P3 execution)**:
+  - codex-L1: runStreamingWorker crash window between result-file write and state update
+  - C4-residual: 3 rename targets to abstract if minimax encounters friction
+  - C5-status-readonly: full zombie-upsert decoupling (requires API-shape split)
+  - SessionEnd-via-updateState: lock-hygiene migration
+- **Rejected as LOW / cosmetic**: codex-L1 (pre-existing bug out of P3 scope, moved to §I.2), gemini-L1 (4-group labeling arbitrary), kimi-L7/L8 (awkward phrasing / already-verified line numbers), qwen-L1/L2 (verification specificity beyond v2 §3 lists), minimax-L2 (already covered in §6.4 checklist note)
+- **Verification**: spec internal cross-references all green — `aa0bde6` git-show confirms gr→kr rename; line numbers (:73 resolveRealCwd def / :94 resolveWorkspaceRoot / :66+:85 cleanupSessionJobs / :13+:21 review.mjs constants) all live-probed and match current HEAD (`8e18587`).
+- **next**: invoke `superpowers:writing-plans` to convert spec into literal-code plan at `docs/superpowers/plans/2026-04-22-v0.2-p3-polish-plan.md`; user approves plan → execute (codex for mechanical, Claude-self for design-touching); one commit / one PR / one merge; tag as `v0.2-p3-polish` (no version bump until P1+P2+P3+P4 all land).
+
 ## 2026-04-21 [Claude Opus 4.7 + codex executor — gemini-plugin-cc v0.6.0 alignment-review response]
 
 - **status**: done
