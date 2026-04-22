@@ -12,6 +12,52 @@ const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
 
+// ── TTL for completed jobs (C6 — P3 polish batch) ─────────
+//
+// Terminal-status jobs (completed / failed / cancelled) are retained for
+// a bounded window so /kimi:result <jobId> still works after the user
+// closes and reopens Claude Code. Default 7 days; KIMI_JOB_TTL_DAYS env
+// overrides (0 = never).
+//
+// Design after 3-way review on plan v1:
+//   - loadState is UNCHANGED — returns raw state. Callers that want
+//     the filtered read view must apply filterExpired themselves.
+//     This is a deliberate choice: session-lifecycle-hook.mjs does
+//     unlocked loadState → saveState; if loadState filtered, the hook
+//     would durably purge outside any lock — the exact race we're
+//     trying to avoid.
+//   - /kimi:status renders filtered view (in kimi-companion.mjs's
+//     runJobStatus, which calls filterExpired on the jobs list).
+//   - updateState applies filterExpired INSIDE its lock right before
+//     saveState, making physical purge atomic with any mutation. That's
+//     the only path that physically drops expired entries from disk.
+//   - Hooks' unlocked saveState preserves expired entries — they get
+//     physically purged by the next mutation path, which is acceptable.
+export const DEFAULT_TTL_DAYS = 7;
+
+export function resolveTtlMs() {
+  const raw = process.env.KIMI_JOB_TTL_DAYS;
+  if (raw === undefined) return DEFAULT_TTL_DAYS * 24 * 60 * 60 * 1000;
+  if (!/^\d+$/.test(raw)) {
+    process.stderr.write(
+      `[kimi] ignoring invalid KIMI_JOB_TTL_DAYS=${raw}; using default ${DEFAULT_TTL_DAYS} days\n`
+    );
+    return DEFAULT_TTL_DAYS * 24 * 60 * 60 * 1000;
+  }
+  const days = Number.parseInt(raw, 10);
+  if (days === 0) return Infinity;
+  return days * 24 * 60 * 60 * 1000;
+}
+
+export function filterExpired(jobs, ttlMs = resolveTtlMs(), nowMs = Date.now()) {
+  if (ttlMs === Infinity) return jobs;
+  return jobs.filter((j) => {
+    if (!j.completedAt) return true;
+    const age = nowMs - new Date(j.completedAt).getTime();
+    return age < ttlMs;
+  });
+}
+
 // ── Path resolution ──────────────────────────────────────
 
 function computeWorkspaceSlug(workspaceRoot) {
@@ -172,6 +218,10 @@ export function updateState(workspaceRoot, mutate) {
 
       try {
         const state = loadState(workspaceRoot);
+        // C6 physical purge — atomic with the mutation under the same lock.
+        // This is the ONLY path that physically drops expired entries; pure
+        // reads (loadState) and unlocked hook paths are unaffected.
+        state.jobs = filterExpired(state.jobs || []);
         mutate(state);
         saveState(workspaceRoot, state);
         return state;
@@ -209,6 +259,8 @@ export function updateState(workspaceRoot, mutate) {
     fs.closeSync(lockFd);
     try {
       const state = loadState(workspaceRoot);
+      // C6 physical purge (forced-break path — same invariant as primary path)
+      state.jobs = filterExpired(state.jobs || []);
       mutate(state);
       saveState(workspaceRoot, state);
       return state;

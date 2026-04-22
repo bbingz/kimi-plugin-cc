@@ -3,7 +3,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import process from "node:process";
 
-import { callKimiStreaming, statusFromSignal, KIMI_STATUS_TIMED_OUT } from "./kimi.mjs";
+import { statusFromSignal, KIMI_STATUS_TIMED_OUT } from "./kimi.mjs";
 import {
   ensureStateDir,
   generateJobId,
@@ -193,6 +193,7 @@ export function runWorker(jobId, workspaceRoot, companionScript, args) {
       pid: null,
       kimiSessionId,
       updatedAt: now,
+      completedAt: now,  // C6: TTL filter keys off this
     };
   });
   if (wasCancelled) {
@@ -204,11 +205,26 @@ export function runWorker(jobId, workspaceRoot, companionScript, args) {
 }
 
 /**
- * Streaming worker — calls callKimiStreaming directly instead of CLI re-entry.
+ * Streaming worker — calls config.runLLM directly instead of CLI re-entry.
  * Used for task/ask commands. Writes streaming events to log for live progress.
+ *
+ * The `runLLM` function is injected by the caller (see C4 seam). In the
+ * background-worker path, it is injected inside `dispatchStreamWorker`
+ * AFTER `JSON.parse` of the config file — functions cannot survive JSON
+ * serialization. This indirection keeps job-control.mjs free of any
+ * provider-specific LLM coupling so sibling plugins can fork it verbatim.
  */
 export async function runStreamingWorker(jobId, workspaceRoot, config) {
   upsertJob(workspaceRoot, { id: jobId, phase: "starting" });
+
+  if (typeof config.runLLM !== "function") {
+    throw new Error(
+      "runStreamingWorker: config.runLLM is required. " +
+      "In the background-worker path, inject it inside dispatchStreamWorker " +
+      "AFTER JSON.parse — functions cannot cross JSON serialization. See C4 seam."
+    );
+  }
+
   const logFile = resolveJobLogFile(workspaceRoot, jobId);
 
   function appendLog(msg) {
@@ -220,7 +236,7 @@ export async function runStreamingWorker(jobId, workspaceRoot, config) {
   appendLog(`Streaming task started`);
   if (config.resumeSessionId) appendLog(`Resuming session: ${config.resumeSessionId}`);
 
-  const result = await callKimiStreaming({
+  const result = await config.runLLM({
     prompt: config.prompt,
     model: config.model || null,
     cwd: config.cwd || process.cwd(),
@@ -267,6 +283,7 @@ export async function runStreamingWorker(jobId, workspaceRoot, config) {
       pid: null,
       kimiSessionId,
       updatedAt: now,
+      completedAt: now,  // C6: TTL filter keys off this
     });
   });
 
@@ -356,18 +373,27 @@ function isProcessAlive(pid) {
   }
 }
 
-function enrichJob(job, workspaceRoot) {
+// Pure enrichment — takes pre-read inputs, returns the enriched record
+// plus a signal flag. No file IO, no state mutation. Suitable for unit
+// tests (call with synthetic inputs; assert on return value).
+//
+// shouldPersistZombie is the caller's cue to upsertJob a zombie-detected
+// job back into state.json. Callers on the /kimi:status read path
+// currently honour this signal (preserving existing behavior); future
+// refactor can decouple (tracked in lessons.md §I.2).
+export function enrichJob(job, { logPreview = "", isAlive = true }) {
   const enriched = { ...job };
+  let shouldPersistZombie = false;
 
-  // Check if running job is actually still alive
-  if (enriched.status === "running" && enriched.pid && !isProcessAlive(enriched.pid)) {
+  // (1) Zombie detection (pure: decision only; caller persists if flagged)
+  if (enriched.status === "running" && enriched.pid && !isAlive) {
     enriched.status = "failed";
     enriched.phase = "failed";
     enriched.detail = "Process exited unexpectedly";
-    upsertJob(workspaceRoot, { id: enriched.id, status: "failed", phase: "failed", pid: null });
+    shouldPersistZombie = true;
   }
 
-  // Add elapsed time
+  // (2) Elapsed time (pure)
   if (enriched.createdAt) {
     const start = new Date(enriched.createdAt).getTime();
     const end = enriched.status === "running"
@@ -376,15 +402,33 @@ function enrichJob(job, workspaceRoot) {
     enriched.elapsed = formatElapsedDuration(start, end);
   }
 
-  // Add progress preview from log file
-  enriched.progressPreview = readJobProgressPreview(
-    resolveJobLogFile(workspaceRoot, enriched.id),
-    DEFAULT_MAX_PROGRESS_LINES
-  );
+  // (3) Progress preview (pure: just assigns the provided string)
+  enriched.progressPreview = logPreview;
 
-  // Add kind label
+  // (4) Kind label (pure)
   enriched.kindLabel = getJobKindLabel(enriched);
 
+  return { enriched, shouldPersistZombie };
+}
+
+// IO wrapper — reads log file + probes liveness, calls pure enrichJob,
+// optionally persists zombie-detected status back to state. This is the
+// callsite /kimi:status uses.
+function enrichJobFromDisk(job, workspaceRoot) {
+  const logPreview = readJobProgressPreview(
+    resolveJobLogFile(workspaceRoot, job.id),
+    DEFAULT_MAX_PROGRESS_LINES
+  );
+  const isAlive = job.pid ? isProcessAlive(job.pid) : false;
+  const { enriched, shouldPersistZombie } = enrichJob(job, { logPreview, isAlive });
+  if (shouldPersistZombie) {
+    upsertJob(workspaceRoot, {
+      id: enriched.id,
+      status: "failed",
+      phase: "failed",
+      pid: null,
+    });
+  }
   return enriched;
 }
 
@@ -426,7 +470,7 @@ export function buildStatusSnapshot(workspaceRoot, { showAll = false } = {}) {
   const limit = showAll ? sorted.length : DEFAULT_MAX_STATUS_JOBS;
   const enriched = sorted
     .slice(0, limit)
-    .map((j) => enrichJob(j, workspaceRoot));
+    .map((j) => enrichJobFromDisk(j, workspaceRoot));
 
   const running = enriched.filter((j) => j.status === "running" || j.status === "queued");
   const recent = enriched.filter((j) => j.status !== "running" && j.status !== "queued");
@@ -442,7 +486,7 @@ export function buildSingleJobSnapshot(workspaceRoot, jobId) {
   const jobs = listJobs(workspaceRoot);
   const job = jobs.find((j) => j.id === jobId);
   if (!job) return null;
-  return enrichJob(job, workspaceRoot);
+  return enrichJobFromDisk(job, workspaceRoot);
 }
 
 // ── Job resolution for result/cancel ─────────────────────
@@ -579,6 +623,7 @@ export function cancelJob(workspaceRoot, jobId) {
     status: "cancelled",
     phase: "cancelled",
     pid: null,
+    completedAt: new Date().toISOString(),  // C6: TTL filter keys off this
   });
 
   return { cancelled: true, jobId };

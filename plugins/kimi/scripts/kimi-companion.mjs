@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import process from "node:process";
 import path from "node:path";
-import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
@@ -33,9 +32,11 @@ import {
   readStoredJobResult,
   SESSION_ID_ENV,
 } from "./lib/job-control.mjs";
-import { upsertJob, getConfig, setConfig } from "./lib/state.mjs";
+import { upsertJob, getConfig, setConfig, filterExpired } from "./lib/state.mjs";
 import { binaryAvailable } from "./lib/process.mjs";
 import { ensureGitRepository, collectReviewContext, isEmptyContext } from "./lib/git.mjs";
+import { errorResult } from "./lib/errors.mjs";
+import { resolveRealCwd } from "./lib/paths.mjs";
 
 // Plugin root is two levels above this file (scripts/kimi-companion.mjs →
 // plugins/kimi). Used for loading packaged schemas.
@@ -57,25 +58,6 @@ function validateScopeOption(scope, emitJson) {
   if (emitJson) process.stdout.write(JSON.stringify({ ok: false, error: msg }, null, 2) + "\n");
   else process.stderr.write("Error: " + msg + "\n");
   process.exit(2);
-}
-
-// Normalize cwd so the spawned `kimi` child sees the SAME path string that
-// our post-call `readSessionIdFromKimiJson(cwd)` lookup uses. kimi stores
-// `~/.kimi/kimi.json.work_dirs[].path` verbatim (probe 06: "canonical()
-// normalizes but does NOT resolve symlinks"), then our Secondary fallback
-// does a `===` match. On macOS /tmp resolves to /private/tmp; without
-// realpath, spawn cwd `/tmp/foo` ends up stored as `/tmp/foo` by kimi, but
-// if a future caller passes `/private/tmp/foo` for lookup they miss. The
-// fix is to pick one form and use it consistently — realpath is the safer
-// choice because it's stable across `cd` through symlinks. Failures
-// (ENOENT, EACCES) fall back to the original string; worst case behavior
-// is identical to pre-fix, not worse. (Review H3 / spec §3.4.)
-function resolveRealCwd(cwd) {
-  try {
-    return fs.realpathSync(cwd);
-  } catch {
-    return cwd;
-  }
 }
 
 // Resolve the git workspace root for the given cwd (background job tracking
@@ -384,7 +366,7 @@ async function runReview(rawArgs) {
   try {
     ensureGitRepository(cwd);
   } catch (e) {
-    process.stdout.write(JSON.stringify({ ok: false, error: e.message }, null, 2) + "\n");
+    process.stdout.write(JSON.stringify(errorResult({ kind: "review", error: e.message }), null, 2) + "\n");
     process.exit(1);
   }
 
@@ -438,8 +420,7 @@ async function runReview(rawArgs) {
     });
   } catch (e) {
     result = {
-      ok: false,
-      error: `Unexpected error during review: ${e.message}`,
+      ...errorResult({ kind: "review", error: `Unexpected error during review: ${e.message}` }),
       truncated,
       retry_used: false,
     };
@@ -481,7 +462,7 @@ async function runAdversarialReview(rawArgs) {
   try {
     ensureGitRepository(cwd);
   } catch (e) {
-    process.stdout.write(JSON.stringify({ ok: false, error: e.message }, null, 2) + "\n");
+    process.stdout.write(JSON.stringify(errorResult({ kind: "adversarial-review", error: e.message }), null, 2) + "\n");
     process.exit(1);
   }
 
@@ -552,8 +533,7 @@ async function runAdversarialReview(rawArgs) {
     });
   } catch (e) {
     result = {
-      ok: false,
-      error: `Unexpected error during adversarial review: ${e.message}`,
+      ...errorResult({ kind: "adversarial-review", error: `Unexpected error during adversarial review: ${e.message}` }),
       truncated,
       retry_used: false,
     };
@@ -586,7 +566,7 @@ async function runTask(rawArgs) {
   // Mutual-exclusion
   if (options["resume-last"] && options.fresh) {
     const err = "Choose either --resume-last or --fresh, not both.";
-    if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: err }, null, 2) + "\n");
+    if (options.json) process.stdout.write(JSON.stringify(errorResult({ kind: "task", error: err }), null, 2) + "\n");
     else process.stderr.write("Error: " + err + "\n");
     process.exit(KIMI_EXIT.USAGE_ERROR);
   }
@@ -597,7 +577,7 @@ async function runTask(rawArgs) {
   }
   if (!prompt) {
     const err = "Provide a prompt or use --resume-last.";
-    if (options.json) process.stdout.write(JSON.stringify({ ok: false, error: err }, null, 2) + "\n");
+    if (options.json) process.stdout.write(JSON.stringify(errorResult({ kind: "task", error: err }), null, 2) + "\n");
     else process.stderr.write("Error: " + err + "\n");
     process.exit(KIMI_EXIT.USAGE_ERROR);
   }
@@ -691,16 +671,26 @@ function runJobStatus(rawArgs) {
 
   if (jobId) {
     const single = buildSingleJobSnapshot(workspaceRoot, jobId);
-    if (!single) {
+    // C6: treat expired jobs as not-found in the /kimi:status render path.
+    // Physical purge happens lazily inside updateState; this is the UX filter.
+    const visible = single ? filterExpired([single]) : [];
+    if (visible.length === 0) {
       process.stdout.write(JSON.stringify({ ok: false, error: `Job ${jobId} not found` }, null, 2) + "\n");
       process.exit(1);
     }
-    process.stdout.write(JSON.stringify(single, null, 2) + "\n");
+    process.stdout.write(JSON.stringify(visible[0], null, 2) + "\n");
     process.exit(0);
   }
 
   const snapshot = buildStatusSnapshot(workspaceRoot, { showAll: options.all });
-  process.stdout.write(JSON.stringify(snapshot, null, 2) + "\n");
+  // C6: filter expired terminal jobs from the rendered snapshot. Running/queued
+  // jobs have no completedAt and are passed through by filterExpired unchanged.
+  const filtered = {
+    ...snapshot,
+    running: filterExpired(snapshot.running),
+    recent: filterExpired(snapshot.recent),
+  };
+  process.stdout.write(JSON.stringify(filtered, null, 2) + "\n");
   process.exit(0);
 }
 
@@ -715,7 +705,15 @@ function runJobResult(rawArgs) {
   // flag needed).
   const reference = positionals[0] || null;
 
-  const job = resolveResultJob(workspaceRoot, reference);
+  // T7 I1: treat expired jobs as not-found in the /kimi:result render path,
+  // mirroring the C6 filter applied in runJobStatus. Without this, /kimi:status
+  // hides an expired job while /kimi:result <expiredId> still returns its
+  // artifacts — UX asymmetry. Re-resolve against the filtered job if the
+  // expired one would have matched.
+  let job = resolveResultJob(workspaceRoot, reference);
+  if (job && filterExpired([job]).length === 0) {
+    job = null;
+  }
   if (!job) {
     process.stdout.write(JSON.stringify({
       ok: false,
@@ -856,6 +854,13 @@ async function dispatchStreamWorker(rawArgs) {
     try { fsMod.unlinkSync(configFile); } catch { /* ignore */ }
     process.exit(1);
   }
+  // C4 seam: inject callKimiStreaming AFTER rehydrating the JSON config.
+  // Functions cannot survive JSON.stringify; this child process imports
+  // callKimiStreaming from its own module graph and wires it in.
+  // Sibling plugins (minimax / qwen / doubao) replace the reference on
+  // the next line with their own call<Llm>Streaming — that single edit
+  // is the only provider-specific coupling this function carries.
+  config.runLLM = callKimiStreaming;
   // try/finally so a thrown runStreamingWorker doesn't leak the tmp config file
   // (codex v1-review C-M2). unlinkSync is itself try-wrapped in case the
   // file was never written or was already swept by the orphan cleanup.

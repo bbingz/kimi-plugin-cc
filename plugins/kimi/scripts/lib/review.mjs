@@ -1,15 +1,23 @@
 // Provider-agnostic review primitives. Sibling plugins can import the same
 // module; only the prompt builder and model-call wiring are provider-specific.
 
+import { errorResult } from "./errors.mjs";
+
 // ── Constants ─────────────────────────────────────────────
 //
 // Diff budget for any review pipeline. Current prompts leave margin for the
 // schema block, summary, and focus line so the full request stays under a
 // conservative ceiling. Callers can override via `runReviewPipeline`'s
-// `maxDiffBytes` / `truncationNotice` / `retryNotice` options when the
+// `maxDiffChars` / `truncationNotice` / `retryNotice` options when the
 // provider has a smaller context window (gemini 5-way-review H3 +
 // qwen 5-way-review M1): sibling plugins with a 32k-context model would
 // otherwise hard-fail on 150 KB diffs.
+//
+// Name kept for back-compat. NB: measurement is JS string length
+// (UTF-16 code units, i.e. chars, NOT UTF-8 bytes). The companion's
+// truncation check uses `context.content.length` at ~kimi-companion.mjs:417
+// and ~:534. New callers / sibling plugins should think in "chars";
+// a fresh refactor can rename when the existing consumers are touched.
 export const MAX_REVIEW_DIFF_BYTES = 150_000;
 
 // Render-layer notices. These strings flow through JSON fields that command
@@ -160,29 +168,38 @@ export function validateReviewOutput(data) {
 
 // All non-ok returns from the shared review pipeline go through this helper so
 // render-layer consumers see a consistent failure shape.
+// `truncationNotice` / `retryNotice` default to the module-level constants so
+// external callers (non-pipeline) keep the v0.1 shape. `runReviewPipeline`
+// threads the caller-effective values (derived from `maxDiffChars`) through
+// every call site below so sibling plugins with a smaller budget don't see a
+// "150 KB" notice on error paths (T5 I1).
 export function reviewError({
   error, rawText = null, parseError = null, firstRawText = null,
   transportError = null, truncated, retry_used, sessionId = null,
   status = null,
+  truncationNotice = TRUNCATION_NOTICE,
+  retryNotice = RETRY_NOTICE,
 }) {
   return {
-    ok: false,
-    error,
-    // Top-level `status` mirrors the `errorResult` shape in kimi.mjs so
-    // downstream exit-code mappers see a consistent field regardless of
-    // whether the failure originated in the transport layer or the review
-    // pipeline (qwen 4-way-review M2). Non-transport failures default to
-    // null; transport failures propagate status via `transportError.status`
-    // AND copy to top-level `status` for direct consumption.
-    status: status ?? (transportError?.status ?? null),
+    // Compose canonical envelope (ok, kind, error, status, stdout, detail)
+    // from ./errors.mjs, then layer on the pipeline-specific fields. Top-level
+    // `status` mirrors the transport-layer `streamErrorResult` shape in
+    // kimi.mjs so downstream exit-code mappers see a consistent field
+    // regardless of whether the failure originated in the transport layer or
+    // the review pipeline (qwen 4-way-review M2). Non-transport failures
+    // default to null; transport failures propagate status via
+    // `transportError.status` AND copy to top-level `status` for direct
+    // consumption. Adversarial callers can override `kind` at their call site
+    // if they need to.
+    ...errorResult({ kind: "review", error, status: status ?? (transportError?.status ?? null) }),
     rawText,
     parseError,
     firstRawText,
     transportError,
     truncated,
-    truncation_notice: truncated ? TRUNCATION_NOTICE : null,
+    truncation_notice: truncated ? truncationNotice : null,
     retry_used,
-    retry_notice: retry_used ? RETRY_NOTICE : null,
+    retry_notice: retry_used ? retryNotice : null,
     sessionId,
   };
 }
@@ -204,7 +221,7 @@ export function reviewError({
 // this module get the same observability breadcrumb; callers can override
 // (or pass null to suppress) if they need a provider-specific label.
 // `truncationNotice` / `retryNotice` overrides let sibling plugins with a
-// different `maxDiffBytes` budget emit a matching user-facing note
+// different `maxDiffChars` budget emit a matching user-facing note
 // (gemini 5-way-review H3 + qwen 5-way-review M1). Defaults mirror the
 // exported `TRUNCATION_NOTICE` / `RETRY_NOTICE` constants.
 export function runReviewPipeline({
@@ -213,7 +230,8 @@ export function runReviewPipeline({
   model = null, cwd = process.cwd(), timeout,
   truncated = false,
   retryWarning = "Warning: review response failed parse/validation; retrying once with error hint...\n",
-  truncationNotice = TRUNCATION_NOTICE,
+  maxDiffChars = MAX_REVIEW_DIFF_BYTES,
+  truncationNotice = formatTruncationNotice(maxDiffChars),
   retryNotice = RETRY_NOTICE,
 } = {}) {
   let firstPrompt;
@@ -224,6 +242,8 @@ export function runReviewPipeline({
       error: `Failed to build review prompt: ${e.message}`,
       truncated,
       retry_used: false,
+      truncationNotice,
+      retryNotice,
     });
   }
 
@@ -238,6 +258,8 @@ export function runReviewPipeline({
       truncated,
       retry_used: false,
       sessionId: (firstResult && firstResult.sessionId) ?? null,
+      truncationNotice,
+      retryNotice,
     });
   }
 
@@ -274,6 +296,8 @@ export function runReviewPipeline({
       truncated,
       retry_used: true,
       sessionId: firstResult.sessionId ?? null,
+      truncationNotice,
+      retryNotice,
     });
   }
   const retryResult = callLLM({
@@ -292,6 +316,8 @@ export function runReviewPipeline({
       truncated,
       retry_used: true,
       sessionId: (retryResult && retryResult.sessionId) ?? null,
+      truncationNotice,
+      retryNotice,
     });
   }
 
@@ -305,6 +331,8 @@ export function runReviewPipeline({
       truncated,
       retry_used: true,
       sessionId: retryResult.sessionId ?? null,
+      truncationNotice,
+      retryNotice,
     });
   }
   const retryValidation = validateReviewOutput(retryExtracted.data);
@@ -316,6 +344,8 @@ export function runReviewPipeline({
       truncated,
       retry_used: true,
       sessionId: retryResult.sessionId ?? null,
+      truncationNotice,
+      retryNotice,
     });
   }
 

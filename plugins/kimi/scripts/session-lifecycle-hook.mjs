@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import process from "node:process";
 
+import { resolveRealCwd } from "./lib/paths.mjs";
 import { loadState, resolveStateFile, saveState } from "./lib/state.mjs";
 
 const SESSION_ID_ENV = "KIMI_COMPANION_SESSION_ID";
@@ -58,7 +59,7 @@ function resolveWorkspaceRoot(cwd) {
       return result.stdout.trim();
     }
   } catch { /* not a git repo */ }
-  return cwd;
+  return resolveRealCwd(cwd);
 }
 
 // Clean up jobs belonging to this session in the current workspace only.
@@ -80,9 +81,18 @@ function cleanupSessionJobs(cwd, sessionId) {
     }
   }
 
+  // C6: narrow SessionEnd cleanup — keep terminal-status jobs (completed /
+  // failed / cancelled) from the ended session so /kimi:result <jobId> still
+  // works after the user reopens Claude Code. Only running/queued jobs from
+  // this session are dropped (their workers have just been SIGTERM'd above).
   saveState(workspaceRoot, {
     ...state,
-    jobs: state.jobs.filter((j) => j.sessionId !== sessionId),
+    jobs: state.jobs.filter((j) => {
+      if (j.sessionId !== sessionId) return true;
+      return j.status === "completed"
+          || j.status === "failed"
+          || j.status === "cancelled";
+    }),
   });
 }
 

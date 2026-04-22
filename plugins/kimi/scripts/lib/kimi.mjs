@@ -6,6 +6,7 @@ import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 import { loadPromptTemplate, interpolateTemplate } from "./prompts.mjs";
 import { runCommand, binaryAvailable } from "./process.mjs";
+import { errorResult } from "./errors.mjs";
 import {
   MAX_REVIEW_DIFF_BYTES,
   TRUNCATION_NOTICE,
@@ -93,6 +94,36 @@ export const KIMI_EXIT = {
 // kimi exit for a local timeout. Monitor: add a probe to Phase 0 test
 // sweep when upgrading kimi-cli major versions.
 export const KIMI_STATUS_TIMED_OUT = 124;
+
+// ── Defensive large-prompt cap (C3 — P3 polish batch) ─────
+//
+// kimi-CLI's handling of multi-MB stdin is untested empirically
+// (Phase-0 probes went to 150 KB max). This is a DEFENSIVE CAP, not a
+// kernel-boundary enforcement — stdin has no ARG_MAX limit (E2BIG
+// applies to argv/env only). Until a probe establishes kimi's real
+// ceiling, a predictable failure message beats opaque pipe hangs.
+//
+// 1_000_000 chars ≈ 1 MB ASCII; CJK content compresses worse in UTF-8
+// but we measure in chars, so the cap behaves consistently regardless
+// of script.
+export const MAX_PROMPT_CHARS = 1_000_000;
+
+// Returns canonical errorResult on oversize; null if OK to proceed.
+// Caller passes { kind, label } — kind for the error envelope shape
+// (C2), label for the human-readable "multiple X calls" message.
+export function checkPromptSize(prompt, { kind, label }) {
+  const chars = prompt.length;
+  if (chars > MAX_PROMPT_CHARS) {
+    return errorResult({
+      kind,
+      error: `prompt exceeds ${MAX_PROMPT_CHARS} chars (got ${chars}); trim context or split into multiple ${label} calls`,
+      status: null,
+      stdout: "",
+      detail: `prompt-too-large: ${chars} chars > ${MAX_PROMPT_CHARS} char cap`,
+    });
+  }
+  return null;
+}
 
 // ── TOML top-level key scanner (spec §3.6) ─────────────────
 
@@ -412,7 +443,12 @@ function describeKimiExit({ status, stdout, stderr }) {
 // All error paths include status + partialResponse + events (for debug /
 // partial recovery). All success paths include response + sessionId +
 // events + toolEvents + thinkBlocks.
-function errorResult({ status, error, stdout, events, textParts }) {
+//
+// Stream-specific error record for callKimi / callKimiStreaming failure paths.
+// Returns events + partialResponse derived from stdout parse — that's why
+// this can't be replaced by the canonical errorResult from ./errors.mjs.
+// Kept local; callers within this file reference it by the new name.
+function streamErrorResult({ status, error, stdout, events, textParts }) {
   const partialEvents = events ?? (stdout ? parseKimiStdout(stdout).events : []);
   const partialText = textParts
     ? textParts.join("")
@@ -434,6 +470,13 @@ export function callKimi({
   extraArgs = [],
   resumeSessionId = null,
 }) {
+  const guardResult = checkPromptSize(prompt, { kind: "ask", label: "ask" });
+  // T6 I-1: enrich canonical errorResult with stream-shape fields so the guard
+  // return is a superset of `streamErrorResult`. Downstream readers expecting
+  // `partialResponse`/`events` on any non-ok callKimi return don't see
+  // undefined on the oversize path.
+  if (guardResult) return { ...guardResult, partialResponse: null, events: [] };
+
   // ── Pre-flight (codex C2) ──
   // Validate requested model against ~/.kimi/config.toml [models.*] BEFORE
   // spawning kimi. Avoids the "LLM not set" exit-1 path (which creates a
@@ -442,7 +485,7 @@ export function callKimi({
   if (model) {
     const configured = readKimiConfiguredModels();
     if (configured.length > 0 && !configured.includes(model)) {
-      return errorResult({
+      return streamErrorResult({
         status: KIMI_EXIT.CONFIG_ERROR,
         error: `Model '${model}' is not configured in ~/.kimi/config.toml. Available: ${configured.join(", ")}`,
         events: [],
@@ -460,14 +503,14 @@ export function callKimi({
   });
 
   if (result.error) {
-    return errorResult({ error: result.error.message, events: [] });
+    return streamErrorResult({ error: result.error.message, events: [] });
   }
 
   // Map signaled exits (status=null + signal=SIGINT/SIGTERM) back to 130/143
   // so describeKimiExit + caller's process.exit() preserve POSIX semantics.
   const effectiveStatus = result.status ?? statusFromSignal(result.signal);
   if (effectiveStatus !== 0) {
-    return errorResult({
+    return streamErrorResult({
       status: effectiveStatus,
       error: describeKimiExit({ ...result, status: effectiveStatus }),
       stdout: result.stdout,
@@ -542,11 +585,16 @@ export function callKimiStreaming({
   resumeSessionId = null,
   onEvent = () => {},
 }) {
+  const guardResult = checkPromptSize(prompt, { kind: "task", label: "task" });
+  // T6 I-1: same shape-merge as callKimi — guard return becomes a superset of
+  // streamErrorResult so streaming consumers see `partialResponse`/`events`.
+  if (guardResult) return Promise.resolve({ ...guardResult, partialResponse: null, events: [] });
+
   // Pre-flight model check, same as callKimi (codex C2).
   if (model) {
     const configured = readKimiConfiguredModels();
     if (configured.length > 0 && !configured.includes(model)) {
-      return Promise.resolve(errorResult({
+      return Promise.resolve(streamErrorResult({
         status: KIMI_EXIT.CONFIG_ERROR,
         error: `Model '${model}' is not configured in ~/.kimi/config.toml. Available: ${configured.join(", ")}`,
         events: [],
@@ -635,7 +683,7 @@ export function callKimiStreaming({
       // Unified timeout contract (codex C6): same shape as other errors.
       // Check BEFORE signal mapping — our SIGTERM was self-inflicted.
       if (timedOut) {
-        resolve(errorResult({
+        resolve(streamErrorResult({
           status: KIMI_STATUS_TIMED_OUT,
           error: `kimi timed out after ${Math.round(timeout / 1000)}s`,
           events,
@@ -649,7 +697,7 @@ export function callKimiStreaming({
       // caller's `result.status ?? 1` folds SIGINT/SIGTERM into a plain exit 1.
       const effectiveStatus = status ?? statusFromSignal(signal);
       if (effectiveStatus !== 0) {
-        resolve(errorResult({
+        resolve(streamErrorResult({
           status: effectiveStatus,
           error: describeKimiExit({ status: effectiveStatus, stdout: textParts.join(""), stderr: stderrBuf }),
           events,
@@ -716,7 +764,7 @@ export function callKimiStreaming({
 
     child.on("error", (err) => {
       clearTimeout(timer);
-      resolve(errorResult({ error: err.message, events, textParts }));
+      resolve(streamErrorResult({ error: err.message, events, textParts }));
     });
   });
 }
