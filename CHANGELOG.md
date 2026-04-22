@@ -2,6 +2,13 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-22 [Codex — v0.2 P3 Task 3 (C1): extract resolveRealCwd into shared lib/paths.mjs]
+
+- **status**: done (Task 3 of 11 in v0.2 P3 polish batch, executed in worktree `feat/v0.2-p3-polish`)
+- **scope**: `plugins/kimi/scripts/lib/paths.mjs` (NEW), `plugins/kimi/scripts/kimi-companion.mjs`, `plugins/kimi/scripts/session-lifecycle-hook.mjs`, `plugins/kimi/scripts/stop-review-gate-hook.mjs`, `CHANGELOG.md`
+- **summary**: extracted `resolveRealCwd(cwd)` into neutral shared module `lib/paths.mjs` with zero provider-specific strings. `kimi-companion.mjs` now imports the helper instead of defining it locally. Both hooks now import the same helper and use `resolveRealCwd(cwd)` as the non-git fallback in `resolveWorkspaceRoot`, so `/tmp` and `/private/tmp` hash to the same workspace slug in non-git paths.
+- **verifications**: `grep -i 'kimi' plugins/kimi/scripts/lib/paths.mjs` returned no matches · 4× `node --check` clean · `grep -rn 'fs.realpathSync' plugins/kimi/scripts/` found exactly 1 match in `lib/paths.mjs` · smoke test showed existing cwd realpaths and nonexistent path falls back unchanged.
+
 ## 2026-04-22 [Claude Opus 4.7 — v0.2 P3 Task 2 (C5): split enrichJob into pure fn + enrichJobFromDisk IO wrapper]
 
 - **status**: done (Task 2 of 11 in v0.2 P3 polish batch, executed in worktree `feat/v0.2-p3-polish`)

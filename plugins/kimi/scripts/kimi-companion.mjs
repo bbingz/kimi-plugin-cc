@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import process from "node:process";
 import path from "node:path";
-import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
@@ -37,6 +36,7 @@ import { upsertJob, getConfig, setConfig } from "./lib/state.mjs";
 import { binaryAvailable } from "./lib/process.mjs";
 import { ensureGitRepository, collectReviewContext, isEmptyContext } from "./lib/git.mjs";
 import { errorResult } from "./lib/errors.mjs";
+import { resolveRealCwd } from "./lib/paths.mjs";
 
 // Plugin root is two levels above this file (scripts/kimi-companion.mjs →
 // plugins/kimi). Used for loading packaged schemas.
@@ -58,25 +58,6 @@ function validateScopeOption(scope, emitJson) {
   if (emitJson) process.stdout.write(JSON.stringify({ ok: false, error: msg }, null, 2) + "\n");
   else process.stderr.write("Error: " + msg + "\n");
   process.exit(2);
-}
-
-// Normalize cwd so the spawned `kimi` child sees the SAME path string that
-// our post-call `readSessionIdFromKimiJson(cwd)` lookup uses. kimi stores
-// `~/.kimi/kimi.json.work_dirs[].path` verbatim (probe 06: "canonical()
-// normalizes but does NOT resolve symlinks"), then our Secondary fallback
-// does a `===` match. On macOS /tmp resolves to /private/tmp; without
-// realpath, spawn cwd `/tmp/foo` ends up stored as `/tmp/foo` by kimi, but
-// if a future caller passes `/private/tmp/foo` for lookup they miss. The
-// fix is to pick one form and use it consistently — realpath is the safer
-// choice because it's stable across `cd` through symlinks. Failures
-// (ENOENT, EACCES) fall back to the original string; worst case behavior
-// is identical to pre-fix, not worse. (Review H3 / spec §3.4.)
-function resolveRealCwd(cwd) {
-  try {
-    return fs.realpathSync(cwd);
-  } catch {
-    return cwd;
-  }
 }
 
 // Resolve the git workspace root for the given cwd (background job tracking

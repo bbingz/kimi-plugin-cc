@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import process from "node:process";
 
+import { resolveRealCwd } from "./lib/paths.mjs";
 import { loadState, resolveStateFile, saveState } from "./lib/state.mjs";
 
 const SESSION_ID_ENV = "KIMI_COMPANION_SESSION_ID";
@@ -58,7 +59,7 @@ function resolveWorkspaceRoot(cwd) {
       return result.stdout.trim();
     }
   } catch { /* not a git repo */ }
-  return cwd;
+  return resolveRealCwd(cwd);
 }
 
 // Clean up jobs belonging to this session in the current workspace only.

@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import { getConfig, listJobs } from "./lib/state.mjs";
 import { sortJobsNewestFirst } from "./lib/job-control.mjs";
+import { resolveRealCwd } from "./lib/paths.mjs";
 import { runCommand } from "./lib/process.mjs";
 
 const STOP_REVIEW_TIMEOUT_MS = 15 * 60 * 1000;
@@ -33,7 +34,7 @@ function logNote(message) {
 
 function resolveWorkspaceRoot(cwd) {
   const r = runCommand("git", ["rev-parse", "--show-toplevel"], { cwd });
-  return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : cwd;
+  return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : resolveRealCwd(cwd);
 }
 
 function buildStopReviewPrompt(input = {}) {
