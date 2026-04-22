@@ -2,6 +2,15 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-22 [Claude Opus 4.7 — v0.2 P3 Task 4 (C4): runLLM seam via dispatchStreamWorker injection]
+
+- **status**: done (Task 4 of 11 in v0.2 P3 polish batch, executed in worktree `feat/v0.2-p3-polish`)
+- **scope**: `plugins/kimi/scripts/lib/job-control.mjs`, `plugins/kimi/scripts/kimi-companion.mjs`, `CHANGELOG.md`
+- **summary**: `job-control.mjs` no longer imports `callKimiStreaming`; `runStreamingWorker` reads `config.runLLM` (with a guard that throws a helpful error referencing the C4 seam if missing). Companion's `dispatchStreamWorker` injects `config.runLLM = callKimiStreaming` AFTER `JSON.parse` of the rehydrated config file — the only place where provider-specific LLM coupling remains. Task-spawn call site in `runTask` is unchanged (passes no `runLLM`, because functions cannot cross the JSON serialization boundary). `onEvent` closure body preserved byte-for-byte.
+- **why this seam shape**: V1 plan proposed injecting `runLLM` at the task-spawn config site, but 3-way plan review (codex) caught that `job-control.mjs:297` writes the config via `JSON.stringify` and `kimi-companion.mjs:833` rehydrates via `JSON.parse` — functions vanish across that boundary. V2 (this task) injects INSIDE the child process's `dispatchStreamWorker`, so the child's own module graph supplies the function reference. Sibling plugins (minimax / qwen / doubao) fork `job-control.mjs` verbatim; only that one line in the sibling's companion changes to `call<Llm>Streaming` — per `sibling-backport-checklist.md` Post-P3 section.
+- **verifications**: `node --check` clean on both files · `grep 'callKimiStreaming' job-control.mjs` → 0 matches · guard fires with correct message when `runLLM` absent (`PASS: guard fires`) · fake `runLLM` injected through `runStreamingWorker` is invoked (`PASS: fake runLLM invoked (seam works)`) · both modules import at runtime without stacks.
+- **next**: remaining P3 tasks per plan (5/6/7/9/10/11).
+
 ## 2026-04-22 [Codex — v0.2 P3 Task 3 (C1): extract resolveRealCwd into shared lib/paths.mjs]
 
 - **status**: done (Task 3 of 11 in v0.2 P3 polish batch, executed in worktree `feat/v0.2-p3-polish`)

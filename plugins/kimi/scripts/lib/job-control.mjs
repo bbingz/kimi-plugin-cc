@@ -3,7 +3,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import process from "node:process";
 
-import { callKimiStreaming, statusFromSignal, KIMI_STATUS_TIMED_OUT } from "./kimi.mjs";
+import { statusFromSignal, KIMI_STATUS_TIMED_OUT } from "./kimi.mjs";
 import {
   ensureStateDir,
   generateJobId,
@@ -204,11 +204,26 @@ export function runWorker(jobId, workspaceRoot, companionScript, args) {
 }
 
 /**
- * Streaming worker — calls callKimiStreaming directly instead of CLI re-entry.
+ * Streaming worker — calls config.runLLM directly instead of CLI re-entry.
  * Used for task/ask commands. Writes streaming events to log for live progress.
+ *
+ * The `runLLM` function is injected by the caller (see C4 seam). In the
+ * background-worker path, it is injected inside `dispatchStreamWorker`
+ * AFTER `JSON.parse` of the config file — functions cannot survive JSON
+ * serialization. This indirection keeps job-control.mjs free of any
+ * provider-specific LLM coupling so sibling plugins can fork it verbatim.
  */
 export async function runStreamingWorker(jobId, workspaceRoot, config) {
   upsertJob(workspaceRoot, { id: jobId, phase: "starting" });
+
+  if (typeof config.runLLM !== "function") {
+    throw new Error(
+      "runStreamingWorker: config.runLLM is required. " +
+      "In the background-worker path, inject it inside dispatchStreamWorker " +
+      "AFTER JSON.parse — functions cannot cross JSON serialization. See C4 seam."
+    );
+  }
+
   const logFile = resolveJobLogFile(workspaceRoot, jobId);
 
   function appendLog(msg) {
@@ -220,7 +235,7 @@ export async function runStreamingWorker(jobId, workspaceRoot, config) {
   appendLog(`Streaming task started`);
   if (config.resumeSessionId) appendLog(`Resuming session: ${config.resumeSessionId}`);
 
-  const result = await callKimiStreaming({
+  const result = await config.runLLM({
     prompt: config.prompt,
     model: config.model || null,
     cwd: config.cwd || process.cwd(),

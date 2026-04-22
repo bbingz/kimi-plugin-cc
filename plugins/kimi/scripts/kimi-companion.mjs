@@ -836,6 +836,13 @@ async function dispatchStreamWorker(rawArgs) {
     try { fsMod.unlinkSync(configFile); } catch { /* ignore */ }
     process.exit(1);
   }
+  // C4 seam: inject callKimiStreaming AFTER rehydrating the JSON config.
+  // Functions cannot survive JSON.stringify; this child process imports
+  // callKimiStreaming from its own module graph and wires it in.
+  // Sibling plugins (minimax / qwen / doubao) replace the reference on
+  // the next line with their own call<Llm>Streaming — that single edit
+  // is the only provider-specific coupling this function carries.
+  config.runLLM = callKimiStreaming;
   // try/finally so a thrown runStreamingWorker doesn't leak the tmp config file
   // (codex v1-review C-M2). unlinkSync is itself try-wrapped in case the
   // file was never written or was already swept by the orphan cleanup.
