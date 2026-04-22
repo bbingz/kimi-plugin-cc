@@ -32,14 +32,17 @@ claude plugins list | grep kimi
 
 Restart your Claude Code session after install so slash commands become available.
 
-## Commands (v0.1)
+## Commands (v0.2)
 
 - `/kimi:setup` — verify Kimi CLI installation, authentication, and configured models
-- `/kimi:ask` — one-shot prompt to Kimi
+- `/kimi:ask` — one-shot prompt to Kimi (new conversation only; see `/kimi:continue` and `/kimi:resume` for resumption)
+- `/kimi:continue <prompt>` — resume the most recent Kimi session for the current cwd
+- `/kimi:resume <sessionId> <prompt>` — resume a specific Kimi session by UUID (current cwd only)
 - `/kimi:review` — balanced code review of the current diff (JSON)
 - `/kimi:adversarial-review` — red-team review of the current diff (same schema, stricter stance)
 - `/kimi:rescue` — delegate a multi-step task to Kimi via the `kimi-agent` subagent
 - `/kimi:status` / `/kimi:result` / `/kimi:cancel` — background-job lifecycle
+- `/kimi:timing` — P1 telemetry browser for recent kimi-cli invocations
 
 ## License
 
