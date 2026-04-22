@@ -5,3 +5,4 @@ node_modules/
 plugins/kimi/scripts/*.tmp
 .claude/
 .worktrees/
+PROGRESS.md
