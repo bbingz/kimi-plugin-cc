@@ -2,6 +2,31 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-23 [Claude Opus 4.7 — v0.2 P2 spec v1.2 + probe v4 (ghost-session CONFIRMED)]
+
+- **status**: probe v4 executed + spec v1.2 integrated probe findings. Commits: `7529f1e` probe v4 + `43b4bb5` spec v1.1 + v1.2 on top of that. All ahead of 6-way review.
+- **scope**: run full ghost-session verification experiment against kimi-cli 1.37.0 from throwaway cwds, then update spec with probe evidence.
+- **Probe v4 summary** (doc/probe/probe-results-v4.json + doc/probe/22-02.md):
+  - **Q4.0 HYPOTHESIS CONFIRMED**: `kimi --print -r <fabricated-uuid>` silently creates a ghost session at that UUID. Exit 0, full 3-file session dir materialized (context.jsonl 17.1K, state.json 390B, wire.jsonl 1005B), kimi.json work_dirs entry's `last_session_id` updated to the fabricated UUID. Zero user-visible indication. Wrapper-side validation is strictly necessary for P2.
+  - **Q4.1 kimi.json schema (delta from 1.36)**: top-level has only `work_dirs`, which is an ARRAY (not object-keyed). Each entry {path, kaos, last_session_id}. kimi 1.37 stores REALPATH-RESOLVED paths (/private/tmp/... on macOS) — differs from probe v3's 1.36 finding of verbatim paths. Spec §7.7 realpath-normalization workaround remains correct for 1.37.
+  - **Q4.2 session dir layout**: 3 files — context.jsonl (UTF-8 JSONL messages), state.json (metadata with keys version/approval/title/archive/todos), wire.jsonl (wire events). Populated predicate: context.jsonl exists AND size > 0.
+  - **Q4.3 cross-cwd**: resuming UUID from cwd A while in cwd B creates duplicate session dir under md5(cwdB). §7.3 refusal justified.
+  - **Q4.4 ghost disk shape**: post-hoc identical to real. Pre-call validation is the only defense.
+  - **Q4.5 UUID variant**: strict v4 RFC 4122. Relaxed regex correctness preserved.
+  - **Q4.6 native subcommand scan**: kimi 1.37 has built-in `--continue -C` flag for per-cwd resume. Surfaced as §12.2 Q6 open question (explicit vs native design for /kimi:continue) for 6-way reviewers.
+- **Spec v1.2 revisions**:
+  - §4.4 resolveContinueTarget: `work_dirs.find(w => w.path === normalizedCwd)` (array iteration, not object index).
+  - §4.4 validateResumeTarget: populated predicate is `existsSync(dir + '/context.jsonl') && statSync(...).size > 0`.
+  - §0.2 hedging stripped: hypothesis is confirmed, no longer "source-read pending probe".
+  - §2.4 all three assumptions upgraded to "probe-confirmed (high confidence)".
+  - §7.5 session-empty scope narrowed: now a safety-net for rare transient corruption, not the ghost state (ghost is unreachable post-hoc).
+  - §9.2 BREAKING note is unambiguous "fixes ghost session" not "may fix depending on probe".
+  - New §12.2 Q6: kimi -C native alternative (surface for reviewers).
+  - §15.2 populated with probe-v4 round audit trail.
+- **Memory hygiene**: active_p2_spec_v1_1_revision.md's fact-check table remains accurate; v1.2 expands scope beyond it but doesn't invalidate any row.
+- **Cleanup verification**: after probe, ~/.kimi/kimi.json diffed against pre-probe backup — all non-probe work_dirs entries preserved; 2 probe entries removed; 2 throwaway /tmp dirs + 2 sessions subdirs removed. Backup file kept as ~/.kimi/kimi.json.bak-probe-v4-<ts> for 7-day safety.
+- **Next (overnight autonomous)**: 6-way spec review on v1.2 → spec v2 → plan v1 → codex plan review → plan v2 → worktree + SDD implementation → tests green. HARD STOP before PR create.
+
 ## 2026-04-23 [Claude Opus 4.7 — v0.2 P2 spec v1.1 (Codex review integrated)]
 
 - **status**: spec v1.1 committed on main — supersedes v1. Awaits probe v4 execution + 6-way review before v2.
