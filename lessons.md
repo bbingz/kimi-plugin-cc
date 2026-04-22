@@ -371,6 +371,44 @@ looked at it already knew it was a stub.
 - **Either way**: `tests/` directory lands together with `timing.mjs`. `sum-invariant` is algebraic and deserves unit tests — gemini has 59, we need a smaller subset tailored to whatever event-schema kimi 1.37 actually emits.
 - **Cross-sibling coordination**: if minimax / qwen / doubao want comparable telemetry, they should match gemini's ndjson schema field-for-field so one aggregator works across providers.
 
+**P3 polish batch landed (2026-04-22, one PR, tag `v0.2-p3-polish`)**:
+
+- ✅ **C1** — `paths.mjs` extracted; `lessons.md §Pit 4` v0.2 gap closed
+- ✅ **C2** — `errorResult` canonical envelope in `lib/errors.mjs`; 4 catch sites + 2 review fallbacks + reviewError composition migrated
+- ✅ **C3** — defensive `MAX_PROMPT_CHARS = 1_000_000` cap in `callKimi*` (rationale: kimi stdin ceiling unprobed, NOT kernel `E2BIG` — v1 was factually wrong)
+- ✅ **C4** — `runLLM` seam in `runStreamingWorker` via `dispatchStreamWorker` post-JSON injection (v1 task-spawn config injection was broken; 3-way review CRITICAL 1)
+- ✅ **C5** — `enrichJob` pure + `enrichJobFromDisk` IO wrapper; full status read-only decoupling deferred (§I.2)
+- ✅ **C6** — `KIMI_JOB_TTL_DAYS` + SessionEnd narrowing (keeps terminal jobs); loadState UNCHANGED (unlocked hook RMW constraint; 3-way review gemini CRITICAL); physical purge in updateState lock; completedAt persist at 3 terminal sites (v1 missed this — 3-way review codex CRITICAL 3)
+- ✅ **C7** — README + sub-CHANGELOG migration note (pre-v0.1 `gr-*/gt-*` residue; commit `aa0bde6` rename)
+- ✅ **C8** — `maxDiffChars` parameter in `runReviewPipeline`; constant `MAX_REVIEW_DIFF_BYTES` name kept for back-compat + clarifying comment
+
+### I.2 Conditional-defer registry (post-P3, 2026-04-22)
+
+Items explicitly deferred during P3 (either because they require a data point from minimax-plugin-cc, or because scope widened beyond "polish"). These are NOT forgotten — they live here so future forks / v0.2+ / v0.3 can pick up with context intact.
+
+| # | Item | Trigger to revisit | Current state |
+|---|---|---|---|
+| D1 | `runStreamingWorker` crash-window between result-file write (`job-control.mjs:253-258`) and state update (`:261-271`) | If a user hits "completed task reported as failed" | Pre-existing since Phase 4 port; codex-L1 flagged it in P3 6-way review. Fix is a single lock scope expansion; out of P3 polish charter. |
+| D2 | `SESSION_ID_ENV` + `KIMI_STATUS_TIMED_OUT` + `kimiSessionId` still hardcoded in `job-control.mjs` after C4's `runLLM` seam | When minimax-plugin-cc encounters friction forking | C4 narrowed scope deliberately. sibling-backport-checklist Post-P3 lists the 3 rename targets so siblings know the sed surface. |
+| D3 | Full decoupling of `/kimi:status` from zombie-upsert side effect | When concurrent status queries produce a visible inconsistency, or when tests/ needs a pure status path | C5 delivered testability of `enrichJob`; `enrichJobFromDisk` still upserts during status reads. Breaking that requires splitting status into `query + reconcile`, which breaks API shape — hence deferred. |
+| D4 | SessionEnd migrating its `loadState → saveState` to `updateState`-under-lock | If a user reports SessionEnd losing worker updates | Current unlocked RMW is pre-existing. P3's C6 fixed the TTL-race aspect by moving physical purge into `updateState`; SessionEnd itself still does its own filter on `saveState` path. Full lock hygiene is separate. |
+| D5 | `MAX_PROMPT_CHARS = 1_000_000` revisit once kimi-CLI stdin ceiling is probed | P1 timing work naturally re-probes kimi 1.37 behaviors | Value is a defensive guess. Real probe data may let us raise (if kimi handles MB stdin fine) or lower (if it hangs earlier). |
+
+### Plan-vs-spec supersessions (not deferred, but worth the note)
+
+| # | Spec said | Plan v2 did | Why |
+|---|---|---|---|
+| S1 | errorResult helper lives in `job-control.mjs` (§2.G1.C2, §1) | Created `lib/errors.mjs` neutral module instead | kimi.mjs already had a local `errorResult` (renamed `streamErrorResult` in P3); importing canonical into kimi.mjs from job-control.mjs would be circular. Caught by P3 plan 3-way review codex CRITICAL 2. |
+| S2 | C4 runLLM seam injection at task-spawn call site (§2.G1.C4) | Injection moved to `dispatchStreamWorker` post-JSON-parse | Background worker path serializes config via `JSON.stringify` → functions can't cross. Caught by P3 plan 3-way review codex CRITICAL 1. |
+| S3 | C6 TTL filter in `loadState` view (§2.G4.C6(b)) | Filter in `kimi-companion.mjs` `runJobStatus` render path instead; loadState unchanged | Unlocked hook RMW (`session-lifecycle-hook.mjs`) would write filtered view to disk outside lock, durably purging — exactly the race we claimed to avoid. Caught by P3 plan 3-way review gemini CRITICAL + codex CRITICAL 3 (latter flagged the missing `completedAt` that would've made any filter placement a no-op). |
+
+These supersessions are **improvements on the spec, not violations of it**. Spec's intent (canonical shape / LLM seam / TTL semantics) is preserved in every case; only the implementation location changes. If a future sibling forks at spec-level (skipping plan details), they'll re-encounter these code-level realities and re-derive the same corrections — the supersession notes above shortcut that re-derivation.
+
+**How to use this table:**
+- New deferral? Add to D-rows above BEFORE adding to `MEMORY.md` backlog — the §I.2 registry IS the backlog for post-P3 architecture-adjacent items.
+- New supersession? Add to S-rows whenever a plan execution chose different-from-spec-but-equivalent-outcome for code-level reasons. Future AIs forking kimi can see exactly where spec and implementation diverged and why.
+- Resolving one? Strike through the row + note the commit SHA that closed it. Do not delete rows — the "why we waited" history is load-bearing for future judgment calls on whether to revisit or defer again.
+
 ---
 
 ## Appendix I: Kimi's actual checklist answers (gemini Phase-5-plan G5)

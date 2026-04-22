@@ -2,6 +2,15 @@
 
 Reverse-chronological, flat format. Cross-AI collaboration log (Claude/Codex/Gemini).
 
+## 2026-04-22 [Claude Opus 4.7 — v0.2 P3 Task 10 (lessons.md): §I.1 P3 closeout + §I.2 defer registry]
+
+- **status**: done (Task 10 of 11 in v0.2 P3 polish batch, executed in worktree `feat/v0.2-p3-polish`)
+- **scope**: `lessons.md`, `CHANGELOG.md`
+- **summary**: §I.1 gains a "P3 polish batch landed (2026-04-22)" subsection appended to its bullet list (before the `---` separator) checking off all 8 polish items (C1 paths.mjs / C2 errorResult canonical envelope / C3 MAX_PROMPT_CHARS cap / C4 runLLM seam / C5 enrichJob split / C6 TTL+SessionEnd / C7 migration note / C8 maxDiffChars param) with specific rationale per item — each ✅ line records either the implementation landing point, the constraint that shaped it, or the 3-way-review finding that corrected the plan. New §I.2 "Conditional-defer registry (post-P3, 2026-04-22)" inserted between §I.1 and the existing `---` separator. §I.2 contains (1) a 5-row deferral table D1–D5 (runStreamingWorker crash window / C4-residual rename targets still hardcoded in job-control.mjs / full status read-only decoupling / SessionEnd-via-updateState / MAX_PROMPT_CHARS probe revisit) each with trigger-to-revisit and current-state columns; (2) a 3-row plan-vs-spec supersession table S1–S3 (errorResult moved to lib/errors.mjs to avoid circular import / C4 injection moved to dispatchStreamWorker post-JSON-parse / C6 filter placement moved out of loadState to avoid unlocked-RMW race) explaining why plan v2 chose a different implementation location than the spec; (3) use-the-table guidance specifying that §I.2 supersedes ad-hoc MEMORY.md backlog for architecture-adjacent deferrals and that resolving a row means strike-through + commit SHA (not deletion, since the "why we waited" context is load-bearing).
+- **structural**: edit preserves the existing `---` separator between §I.1/§I.2 content and `## Appendix I: Kimi's actual checklist answers`. §I.2 lands as a peer subsection to §I.1 (same `###` heading depth) inside §I ("Cross-plugin alignment review responses"), not a new top-level section.
+- **verifications**: `grep -n "I.2 Conditional-defer registry\|P3 polish batch landed" lessons.md` → both present (lines 374, 385) · `grep -c "^| D[0-9]" lessons.md` → `5` · `grep -c "^| S[0-9]" lessons.md` → `3` · structural anchors unchanged: §I.1 at 287, P3 closeout at 374, §I.2 at 385, `---` at 412, `## Appendix I` at 414.
+- **next**: Task 11 (final P3 polish task per plan).
+
 ## 2026-04-22 [Codex]
 
 - **status**: added
